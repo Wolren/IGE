@@ -8,3 +8,6 @@ pub use crate::solvers::{
 };
 
 pub use crate::geometry::rotate_polygon;
+
+pub use crate::bcrs::solve_bcrs;
+pub use crate::bcrs::{BcrsOptions, BcrsResult};

@@ -25,7 +25,7 @@ geo.workspace = true
 geo-types.workspace = true
 thiserror.workspace = true
 ordered-float.workspace = true
-rayon = { workspace = true, optional = true }
+rayon = { workspace = true }
 anyhow = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
@@ -40,4 +40,4 @@ serde_json = "1.0"
 default = ["cpu"]
 serde = ["dep:serde", "geo/serde"]
 cpu = []
-gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:rayon", "dep:anyhow"]
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:anyhow"]

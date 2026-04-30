@@ -8,6 +8,7 @@ pub mod solvers;
 
 #[cfg(feature = "gpu")]
 pub mod gpu;
+pub mod bcrs;
 
 pub use cpu::{solve_oriented_lir, Rectangle, SolverOptions, detect_polygon_type, rotate_polygon};
 

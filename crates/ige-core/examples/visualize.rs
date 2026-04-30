@@ -1,16 +1,19 @@
-//! IGE Visual Preview Tool
+//! IGE Visual Preview Tool — BCRS + baseline comparison.
 //!
-//! Generates HTML files to visualize polygons and their largest inscribed rectangles.
-//! Output goes to `target/ige_output/` directory.
+//! Output: `target/ige_output/index.html`
 //!
-//! Run with: cargo run --package ige-core --example visualize
+//! Usage:
+//!   cargo run --package ige-core --example visualize
+//!   cargo run --package ige-core --example visualize -- --baseline
+//!   cargo run --package ige-core --example visualize -- --limit 50
 
 use geo::Area;
 use geo_types::{Coord, LineString, Polygon};
+use ige_core::bcrs::{solve_bcrs, BcrsOptions};
 use ige_core::solve_oriented_lir;
+use rayon::prelude::*;
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
 
 fn parse_ring(value: &Value) -> Option<Vec<Coord<f64>>> {
     let ring = value.as_array()?;
@@ -41,7 +44,6 @@ fn parse_polygon(geom: &Value) -> Option<Polygon<f64>> {
         .filter(|ls| ls.len() >= 3)
         .map(LineString::from)
         .collect();
-
     if holes.is_empty() {
         Some(Polygon::new(exterior_ls, vec![]))
     } else {
@@ -49,13 +51,14 @@ fn parse_polygon(geom: &Value) -> Option<Polygon<f64>> {
     }
 }
 
-fn load_polygons() -> Vec<(usize, Polygon<f64>)> {
-    let content = include_str!("../tests/real_world_data/realworld.geojson");
-    let json: Value = serde_json::from_str(content).expect("Failed to parse realworld.geojson");
-
+fn load_polygons_from(path: Option<&str>) -> Vec<(usize, Polygon<f64>)> {
+    let content = match path {
+        Some(p) => fs::read_to_string(p).expect("Failed to read file"),
+        None => include_str!("../tests/real_world_data/realworld.geojson").to_string(),
+    };
+    let json: Value = serde_json::from_str(&content).expect("Failed to parse GeoJSON");
     let features = json.get("features").expect("No features");
     let arr = features.as_array().expect("Features is not array");
-
     arr.iter()
         .filter_map(|f| {
             let id = f.get("properties")?.get("fid")?.as_u64()? as usize;
@@ -119,273 +122,259 @@ fn make_zigzag(cx: f64, cy: f64, size: f64) -> Polygon<f64> {
     )
 }
 
-fn is_valid_polygon(poly: &Polygon<f64>) -> bool {
-    if poly.unsigned_area() <= 0.0 {
-        return false;
-    }
-    for coord in poly.exterior().0.iter() {
-        if !coord.x.is_finite() || !coord.y.is_finite() {
-            return false;
-        }
-    }
-    true
-}
-
 fn get_polygon_bounds(poly: &Polygon<f64>) -> (f64, f64, f64, f64) {
     let mut min_x = f64::MAX;
     let mut min_y = f64::MAX;
     let mut max_x = f64::MIN;
     let mut max_y = f64::MIN;
-
     for coord in poly.exterior().0.iter() {
         min_x = min_x.min(coord.x);
         min_y = min_y.min(coord.y);
         max_x = max_x.max(coord.x);
         max_y = max_y.max(coord.y);
     }
-
     (min_x, min_y, max_x, max_y)
 }
 
-fn generate_svg_for_polygon(id: &str, poly: &Polygon<f64>, rect: Option<&ige_core::Rectangle>, time_ms: f64) -> String {
+fn gen_svg_card(
+    id: &str,
+    poly: &Polygon<f64>,
+    rect_polygon: Option<&Polygon<f64>>,
+    rect_area: f64,
+    angle_deg: f64,
+    best_effort: bool,
+    time_ms: f64,
+) -> String {
     let (min_x, min_y, max_x, max_y) = get_polygon_bounds(poly);
     let poly_area = poly.unsigned_area();
-    let rect_area = rect.map(|r| r.area()).unwrap_or(0.0);
-    
-    let size = 200.0;
-    let padding = 10.0;
-    let draw_size = size - 2.0 * padding;
-    
-    let width = max_x - min_x;
-    let height = max_y - min_y;
-    let scale = if width > 0.0 && height > 0.0 {
-        (draw_size / width).min(draw_size / height)
+
+    let svg_size = 200.0;
+    let pad = 10.0;
+    let draw_size = svg_size - 2.0 * pad;
+    let span_x = max_x - min_x;
+    let span_y = max_y - min_y;
+    let scale = if span_x > 0.0 && span_y > 0.0 {
+        (draw_size / span_x).min(draw_size / span_y)
     } else {
         draw_size
     };
-    
-    let offset_x = padding + (draw_size - width * scale) / 2.0;
-    let offset_y = padding + (draw_size - height * scale) / 2.0;
-    
-    let to_svg = |x: f64, y: f64| -> (f64, f64) {
-        (offset_x + (x - min_x) * scale, offset_y + (y - min_y) * scale)
-    };
-    
-    let exterior_points: String = poly.exterior().0.iter()
-        .map(|c| {
-            let (sx, sy) = to_svg(c.x, c.y);
-            format!("{:.1},{:.1}", sx, sy)
-        })
+    let ox = pad + (draw_size - span_x * scale) * 0.5;
+    let oy = pad + (draw_size - span_y * scale) * 0.5;
+
+    let to_svg = |x: f64, y: f64| (ox + (x - min_x) * scale, oy + (y - min_y) * scale);
+
+    let ext_pts: String = poly.exterior().0.iter()
+        .map(|c| { let (sx, sy) = to_svg(c.x, c.y); format!("{:.1},{:.1}", sx, sy) })
         .collect::<Vec<_>>()
         .join(" ");
-    
+
     let holes_svg: String = poly.interiors().iter()
         .map(|hole| {
-            let points: String = hole.0.iter()
-                .map(|c| {
-                    let (sx, sy) = to_svg(c.x, c.y);
-                    format!("{:.1},{:.1}", sx, sy)
-                })
+            let pts: String = hole.0.iter()
+                .map(|c| { let (sx, sy) = to_svg(c.x, c.y); format!("{:.1},{:.1}", sx, sy) })
                 .collect::<Vec<_>>()
                 .join(" ");
-            format!(r#"<polygon class="hole" points="{}"/>"#, points)
+            format!(r#"<polygon class="hole" points="{}"/>"#, pts)
         })
         .collect();
-    
-    let rect_svg = if let Some(r) = rect {
-        let (x0, y0) = to_svg(r.x_min, r.y_min);
-        let (x1, y1) = to_svg(r.x_max, r.y_max);
-        format!(
-            r#"<rect class="rect" x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}"/>"#,
-            x0, y0, x1 - x0, y1 - y0
-        )
-    } else {
-        String::new()
+
+    let (rect_svg, extra) = match rect_polygon {
+        Some(rp) => {
+            let rpts: String = rp.exterior().0.iter()
+                .map(|c| { let (sx, sy) = to_svg(c.x, c.y); format!("{:.1},{:.1}", sx, sy) })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let cls = if best_effort { "rect best-effort" } else { "rect" };
+            let ang_s = if angle_deg.abs() > 0.01 { format!("Angle: {:.1}°<br/>", angle_deg) } else { String::new() };
+            let be_s = if best_effort { "best-effort<br/>" } else { "" };
+            (format!(r#"<polygon class="{}" points="{}"/>"#, cls, rpts), format!("{}{}", ang_s, be_s))
+        }
+        None => (String::new(), String::new()),
     };
-    
-    let fill_ratio = if poly_area > 0.0 { rect_area / poly_area * 100.0 } else { 0.0 };
-    
+
+    let ratio = if poly_area > 0.0 { rect_area / poly_area * 100.0 } else { 0.0 };
+
     format!(
         r#"<div class="card">
-            <svg viewBox="0 0 {:.0} {:.0}">
-                <polygon class="polygon" points="{}"/>
-                {}
-                {}
+            <svg viewBox="0 0 {s:.0} {s:.0}">
+                <polygon class="polygon" points="{p}"/>
+                {h}
+                {r}
             </svg>
             <div class="info">
-                <strong>{}</strong><br/>
-                Polygon: {:.1}<br/>
-                Rectangle: {:.1}<br/>
-                Fill: {:.1}%<br/>
-                Time: {:.2}ms
+                <strong>{id}</strong><br/>
+                Polygon: {pa:.1}<br/>
+                Rectangle: {ra:.1}<br/>
+                Fill: {fr:.1}%<br/>
+                {ex}Time: {t:.2}ms
             </div>
         </div>"#,
-        size, size,
-        exterior_points,
-        holes_svg,
-        rect_svg,
-        id,
-        poly_area,
-        rect_area,
-        fill_ratio,
-        time_ms
+        s = svg_size,
+        p = ext_pts,
+        h = holes_svg,
+        r = rect_svg,
+        id = id,
+        pa = poly_area,
+        ra = rect_area,
+        fr = ratio,
+        ex = extra,
+        t = time_ms,
     )
 }
 
-pub fn generate_preview_html(output_dir: &PathBuf, max_polygons: Option<usize>) -> std::io::Result<()> {
-    let mut all_polygons: Vec<(String, Polygon<f64>)> = Vec::new();
-    
-    all_polygons.push(("Square 10x10".to_string(), Polygon::new(
-        LineString::from(vec![
-            Coord { x: 0.0, y: 0.0 },
-            Coord { x: 10.0, y: 0.0 },
-            Coord { x: 10.0, y: 10.0 },
-            Coord { x: 0.0, y: 10.0 },
-            Coord { x: 0.0, y: 0.0 },
-        ]),
-        vec![],
-    )));
-    
-    all_polygons.push(("Rectangle 10x1".to_string(), Polygon::new(
-        LineString::from(vec![
-            Coord { x: 0.0, y: 0.0 },
-            Coord { x: 10.0, y: 0.0 },
-            Coord { x: 10.0, y: 1.0 },
-            Coord { x: 0.0, y: 1.0 },
-            Coord { x: 0.0, y: 0.0 },
-        ]),
-        vec![],
-    )));
-    
-    all_polygons.push(("Triangle".to_string(), Polygon::new(
-        LineString::from(vec![
-            Coord { x: 0.0, y: 0.0 },
-            Coord { x: 10.0, y: 0.0 },
-            Coord { x: 5.0, y: 10.0 },
-            Coord { x: 0.0, y: 0.0 },
-        ]),
-        vec![],
-    )));
-    
-    all_polygons.push(("L-Shape".to_string(), make_l_shape(5.0, 5.0, 5.0)));
-    
-    all_polygons.push(("U-Shape".to_string(), make_u_shape(5.0, 5.0, 5.0)));
-    
-    all_polygons.push(("Zigzag".to_string(), make_zigzag(5.0, 5.0, 5.0)));
-    
-    let real_polygons = load_polygons();
-    for (id, poly) in real_polygons {
-        let vertex_count = poly.exterior().0.len() - 1;
-        all_polygons.push((format!("Real #{} ({}v)", id, vertex_count), poly));
-        if let Some(n) = max_polygons {
-            if all_polygons.len() >= n {
-                break;
-            }
-        }
-    }
-    
-    let output_dir = output_dir.join("ige_output");
-    fs::create_dir_all(&output_dir)?;
-
-    let mut html = String::from(r#"<!DOCTYPE html>
-<html>
-<head>
-    <title>IGE Visual Preview</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; margin: 20px; background: #1a1a2e; color: #eee; }
-        h1 { color: #eee; margin-bottom: 10px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
-        .card { background: #16213e; border-radius: 8px; padding: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
-        svg { width: 100%; height: 200px; background: #0f0f23; border-radius: 4px; }
-        .polygon { fill: #e94560; stroke: #ff6b6b; stroke-width: 1; }
-        .rect { fill: rgba(66, 133, 244, 0.4); stroke: #4285f4; stroke-width: 2; }
-        .hole { fill: none; stroke: #666; stroke-width: 1; stroke-dasharray: 3; }
-        .info { margin-top: 8px; font-size: 11px; color: #aaa; line-height: 1.4; }
-        .stats { background: #16213e; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
-        .stats p { margin: 5px 0; color: #ccc; }
-        .stats strong { color: #fff; }
-    </style>
-</head>
-<body>
-    <h1>IGE - Largest Inscribed Rectangle Preview</h1>
-    <div class="stats">
-"#);
-
-    let mut success_count = 0;
-    let mut failed_count = 0;
-    let mut total_rect_area = 0.0;
-    let mut total_poly_area: f64 = 0.0;
-    let mut total_time_ms = 0.0;
-    let mut cards_html = String::new();
-    
-    for (id, poly) in &all_polygons {
-        let poly_area = poly.unsigned_area();
-        total_poly_area += poly_area;
-        
-        let start = std::time::Instant::now();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solve_oriented_lir(poly)))
-            .unwrap_or(None);
-        let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-        total_time_ms += elapsed;
-        
-        if result.is_some() {
-            success_count += 1;
-        } else {
-            failed_count += 1;
-        }
-        
-        if let Some(ref rect) = result {
-            total_rect_area += rect.area();
-        }
-        
-        cards_html.push_str(&generate_svg_for_polygon(id, poly, result.as_ref(), elapsed));
-    }
-
-    let fill_ratio = if total_poly_area > 0.0 { total_rect_area / total_poly_area * 100.0 } else { 0.0 };
-    
-html.push_str(&format!(
-        r#"
-        <p><strong>Total shapes:</strong> {}</p>
-        <p><strong>Successfully processed:</strong> {} ({:.1}%)</p>
-        <p><strong>Failed:</strong> {}</p>
-        <p><strong>Total polygon area:</strong> {:.0}</p>
-        <p><strong>Total inscribed area:</strong> {:.0} ({:.1}%)</p>
-        <p><strong>Total processing time:</strong> {:.1}ms ({:.2}ms avg per shape)</p>
-        "#,
-        all_polygons.len(),
-        success_count,
-        success_count as f64 / all_polygons.len() as f64 * 100.0,
-        failed_count,
-        total_poly_area,
-        total_rect_area,
-        fill_ratio,
-        total_time_ms,
-        total_time_ms / all_polygons.len() as f64
-    ));
-
-    html.push_str(r#"
-    </div>
-    <div class="grid">
-"#);
-    
-    html.push_str(&cards_html);
-    
-    html.push_str(r#"
-    </div>
-</body>
-</html>
-"#);
-
-    let output_path = output_dir.join("index.html");
-    fs::write(&output_path, &html)?;
-    
-    println!("Generated preview: {}", output_path.display());
-    
-    Ok(())
-}
-
 fn main() {
-    let real_polygons = load_polygons();
-    eprintln!("Loaded {} polygons from realworld.geojson", real_polygons.len());
-    generate_preview_html(&std::env::current_dir().unwrap().join("target"), None).unwrap();
+    let args: Vec<String> = std::env::args().collect();
+    let use_bcrs = !args.contains(&"--baseline".to_string());
+    let limit = args.iter()
+        .position(|a| a == "--limit")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok());
+    let file_path = args.iter()
+        .position(|a| a == "--file")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str());
+
+    let algo_name = if use_bcrs { "BCRS" } else { "Baseline (vertex grid)" };
+
+    let real = load_polygons_from(file_path);
+    eprintln!("Loaded {} polygons from geojson", real.len());
+
+    let mut all_polygons: Vec<(String, Polygon<f64>)> = vec![
+        ("Square 10x10".into(), Polygon::new(
+            LineString::from(vec![
+                Coord { x: 0.0, y: 0.0 }, Coord { x: 10.0, y: 0.0 },
+                Coord { x: 10.0, y: 10.0 }, Coord { x: 0.0, y: 10.0 },
+                Coord { x: 0.0, y: 0.0 },
+            ]), vec![],
+        )),
+        ("Rectangle 20x5".into(), Polygon::new(
+            LineString::from(vec![
+                Coord { x: 0.0, y: 0.0 }, Coord { x: 20.0, y: 0.0 },
+                Coord { x: 20.0, y: 5.0 }, Coord { x: 0.0, y: 5.0 },
+                Coord { x: 0.0, y: 0.0 },
+            ]), vec![],
+        )),
+        ("Triangle".into(), Polygon::new(
+            LineString::from(vec![
+                Coord { x: 0.0, y: 0.0 }, Coord { x: 10.0, y: 0.0 },
+                Coord { x: 5.0, y: 10.0 }, Coord { x: 0.0, y: 0.0 },
+            ]), vec![],
+        )),
+        ("L-Shape".into(), make_l_shape(5.0, 5.0, 5.0)),
+        ("U-Shape".into(), make_u_shape(5.0, 5.0, 5.0)),
+        ("Zigzag".into(), make_zigzag(5.0, 5.0, 5.0)),
+    ];
+    for (id, poly) in real {
+        let vc = poly.exterior().0.len() - 1;
+        all_polygons.push((format!("Real #{} ({}v)", id, vc), poly));
+        if let Some(n) = limit {
+            if all_polygons.len() >= n { break; }
+        }
+    }
+    eprintln!("Algorithm: {algo_name}");
+    eprintln!("Total shapes: {}", all_polygons.len());
+
+    let out_dir = std::env::current_dir().unwrap().join("target").join("ige_output");
+    fs::create_dir_all(&out_dir).unwrap();
+
+    // Wall-clock timer for the parallel section
+    let wall_start = std::time::Instant::now();
+
+    // Process all polygons in parallel with rayon, collecting (index, card, area, angle, best_effort, ms)
+    let mut results: Vec<(usize, String, f64, f64, bool, f64)> = all_polygons
+        .par_iter()
+        .enumerate()
+        .map(|(idx, (id, poly))| {
+            let start = std::time::Instant::now();
+
+            let (rp, ra, ang, be) = if use_bcrs {
+                match solve_bcrs(poly, &BcrsOptions::default()) {
+                    Ok(r) => (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
+                    Err(_) => (None, 0.0, 0.0, false),
+                }
+            } else {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solve_oriented_lir(poly))) {
+                    Ok(Some(rect)) => {
+                        let rp = Polygon::new(LineString::from(vec![
+                            Coord { x: rect.x_min, y: rect.y_min },
+                            Coord { x: rect.x_max, y: rect.y_min },
+                            Coord { x: rect.x_max, y: rect.y_max },
+                            Coord { x: rect.x_min, y: rect.y_max },
+                            Coord { x: rect.x_min, y: rect.y_min },
+                        ]), vec![]);
+                        (Some(rp), rect.area(), 0.0, false)
+                    }
+                    _ => (None, 0.0, 0.0, false),
+                }
+            };
+            let ms = start.elapsed().as_secs_f64() * 1000.0;
+            let card = gen_svg_card(id, poly, rp.as_ref(), ra, ang, be, ms);
+            (idx, card, ra, ang, be, ms)
+        })
+        .collect();
+
+    let wall_total_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
+
+    results.sort_by_key(|(idx, ..)| *idx);
+
+    let mut cards = String::new();
+    let mut success = 0usize;
+    let mut failed = 0usize;
+    let mut total_rect_area = 0.0;
+    let mut total_poly_area = 0.0;
+
+    for (idx, card, ra, _ang, _be, _ms) in &results {
+        let (_, poly) = &all_polygons[*idx];
+        total_poly_area += poly.unsigned_area();
+        total_rect_area += ra;
+        if *ra > 0.0 { success += 1; } else { failed += 1; }
+        cards.push_str(card);
+    }
+
+    let fill = if total_poly_area > 0.0 { total_rect_area / total_poly_area * 100.0 } else { 0.0 };
+    let avg = wall_total_ms / all_polygons.len() as f64;
+
+    let html = format!(r#"<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>IGE Visual Preview — {algo}</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;margin:20px;background:#1a1a2e;color:#eee}}
+h1{{color:#eee;margin-bottom:10px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:15px}}
+.card{{background:#16213e;border-radius:8px;padding:10px;box-shadow:0 2px 8px rgba(0,0,0,.3)}}
+svg{{width:100%;height:200px;background:#0f0f23;border-radius:4px}}
+.polygon{{fill:#e94560;stroke:#ff6b6b;stroke-width:1}}
+.rect{{fill:rgba(66,133,244,.4);stroke:#4285f4;stroke-width:2}}
+.best-effort{{fill:rgba(255,193,7,.3);stroke:#ffc107}}
+.hole{{fill:none;stroke:#666;stroke-width:1;stroke-dasharray:3}}
+.info{{margin-top:8px;font-size:11px;color:#aaa;line-height:1.4}}
+.stats{{background:#16213e;padding:20px;border-radius:8px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,.3)}}
+.stats p{{margin:5px 0;color:#ccc}}
+.stats strong{{color:#fff}}
+</style></head><body>
+<h1>IGE — Largest Inscribed Rectangle Preview</h1>
+<p style="color:#aaa;">Algorithm: <strong style="color:#4285f4;">{algo}</strong> &mdash; full dataset ({n} shapes)</p>
+<div class="stats">
+<p><strong>Success:</strong> {ok}/{n} ({pct:.1}%) &nbsp; <strong>Failed:</strong> {fail}</p>
+<p><strong>Polygon area:</strong> {pa:.0} &nbsp; <strong>Inscribed area:</strong> {ra:.0} ({fill:.1}%)</p>
+<p><strong>Total time:</strong> {t:.1}ms &nbsp; <strong>Avg:</strong> {avg:.2}ms/shape</p>
+</div>
+<div class="grid">{cards}</div>
+</body></html>"#,
+        algo = algo_name,
+        n = all_polygons.len(),
+        ok = success,
+        pct = success as f64 / all_polygons.len() as f64 * 100.0,
+        fail = failed,
+        pa = total_poly_area,
+        ra = total_rect_area,
+        fill = fill,
+        t = wall_total_ms,
+        avg = avg,
+        cards = cards,
+    );
+
+    let path = out_dir.join("index.html");
+    fs::write(&path, &html).unwrap();
+    println!("Generated: {}  ({algo_name})", path.display());
 }
