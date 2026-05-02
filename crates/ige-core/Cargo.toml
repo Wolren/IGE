@@ -19,12 +19,17 @@ harness = false
 name = "real_world"
 harness = false
 
+[[bench]]
+name = "bcrs_regression"
+harness = false
+
 [dependencies]
 serde = { workspace = true, optional = true }
 geo.workspace = true
 geo-types.workspace = true
 thiserror.workspace = true
 ordered-float.workspace = true
+rustc-hash.workspace = true
 rayon = { workspace = true }
 anyhow = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }

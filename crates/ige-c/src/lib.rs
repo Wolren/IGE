@@ -4,7 +4,9 @@
 //! with C FFI support.
 
 use libc::{c_double, c_int, size_t};
-use ige_core::{solve_axis_aligned, solve_oriented_lir, AxisAlignedOptions, SolverOptions};
+use ige_core::{solve_axis_aligned, AxisAlignedOptions, rotate_polygon};
+use ige_core::bcrs::{solve_bcrs, BcrsOptions};
+use geo::BoundingRect;
 use geo_types::{Coord, LineString, Polygon};
 use std::slice;
 
@@ -36,18 +38,6 @@ impl Default for IgeOptions {
             force_cpu: 0,
             max_aspect_ratio: 0.0,
             use_parallel_field: 0,
-        }
-    }
-}
-
-impl From<IgeOptions> for SolverOptions {
-    fn from(opts: IgeOptions) -> Self {
-        SolverOptions {
-            rotation_degrees: opts.rotation_degrees,
-            prefer_gpu: opts.prefer_gpu != 0,
-            force_cpu: opts.force_cpu != 0,
-            max_aspect_ratio: opts.max_aspect_ratio,
-            gpu_threshold: 1000,
         }
     }
 }
@@ -106,7 +96,6 @@ pub unsafe extern "C" fn ige_solve_axis_aligned(
 
     let exterior = LineString::from(geo_coords);
     let polygon = Polygon::new(exterior, vec![]);
-
     let opts: AxisAlignedOptions = if options.is_null() {
         IgeAxisAlignedOptions::default()
     } else {
@@ -188,21 +177,39 @@ pub unsafe extern "C" fn ige_solve(
     } else {
         unsafe { *options }
     };
-    let _solver_opts: SolverOptions = opts.into();
+    let rotation = opts.rotation_degrees;
+    let working_polygon = if rotation.abs() > 1e-12 {
+        rotate_polygon(&polygon, rotation)
+    } else {
+        polygon.clone()
+    };
+    let mut bcrs_opts = BcrsOptions::default();
+    bcrs_opts.max_ratio = opts.max_aspect_ratio;
+    bcrs_opts.use_parallel_field = opts.use_parallel_field != 0;
 
-    // Solve
-    let rect = solve_oriented_lir(&polygon);
-    match rect {
-        Some(rect) => {
+    let solve_result = solve_bcrs(&working_polygon, &bcrs_opts);
+    match solve_result {
+        Ok(res) => {
+            let mut rect_poly = match res.rect_polygon {
+                Some(r) => r,
+                None => return -1,
+            };
+            if rotation.abs() > 1e-12 {
+                rect_poly = rotate_polygon(&rect_poly, -rotation);
+            }
+            let bb = match rect_poly.bounding_rect() {
+                Some(b) => b,
+                None => return -1,
+            };
             *result = IgeRectangle {
-                x_min: rect.x_min,
-                y_min: rect.y_min,
-                x_max: rect.x_max,
-                y_max: rect.y_max,
+                x_min: bb.min().x,
+                y_min: bb.min().y,
+                x_max: bb.max().x,
+                y_max: bb.max().y,
             };
             0
         }
-        None => -1,
+        Err(_) => -1,
     }
 }
 

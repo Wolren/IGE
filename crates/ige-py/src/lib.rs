@@ -1,5 +1,6 @@
 use ige_core::bcrs::{solve_bcrs, BcrsOptions};
-use ige_core::{solve_axis_aligned, solve_oriented_lir, AxisAlignedOptions, Rectangle, SolverOptions};
+use ige_core::{solve_axis_aligned, AxisAlignedOptions, Rectangle, rotate_polygon};
+use geo::BoundingRect;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use geo_types::{Polygon, LineString, Coord};
@@ -36,14 +37,30 @@ pub fn solve_oriented_lir_py(
         .collect();
     let exterior_ls = LineString::from(coords);
     let polygon = Polygon::new(exterior_ls, vec![]);
+    let rotation = rotation_degrees.unwrap_or(0.0);
+    let working_polygon = if rotation.abs() > 1e-12 {
+        rotate_polygon(&polygon, rotation)
+    } else {
+        polygon.clone()
+    };
 
-    let mut _opts = SolverOptions::default();
-    if let Some(deg) = rotation_degrees {
-        _opts.rotation_degrees = deg;
+    let result = solve_bcrs(&working_polygon, &BcrsOptions::default())
+        .map_err(|e| PyValueError::new_err(format!("solve failed: {e}")))?;
+    let mut rect_poly = result
+        .rect_polygon
+        .ok_or_else(|| PyValueError::new_err("solve failed: empty result polygon"))?;
+    if rotation.abs() > 1e-12 {
+        rect_poly = rotate_polygon(&rect_poly, -rotation);
     }
-
-    let result = solve_oriented_lir(&polygon)
-        .ok_or_else(|| PyValueError::new_err("solve failed"))?;
+    let bb = rect_poly
+        .bounding_rect()
+        .ok_or_else(|| PyValueError::new_err("solve failed: invalid result bounds"))?;
+    let result = Rectangle {
+        x_min: bb.min().x,
+        y_min: bb.min().y,
+        x_max: bb.max().x,
+        y_max: bb.max().y,
+    };
 
     Ok(PyOrientedLirResult {
         x_min: result.x_min,

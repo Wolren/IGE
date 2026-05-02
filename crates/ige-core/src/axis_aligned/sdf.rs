@@ -3,8 +3,12 @@
 //! Port of `_polygon_sdf`, `_rect_sdf_max`, and `_certify_and_adjust`
 //! from `bcrs_fast_worker.py`.
 
-use geo::{Contains, EuclideanDistance};
-use geo_types::{Point, Polygon};
+use geo_types::{Coord, Polygon};
+
+#[cfg(target_arch = "x86")]
+use std::arch::x86 as arch;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64 as arch;
 
 const CERT_EPS: f64 = 1e-7;
 const CERT_MAX_SHRINK: f64 = 0.20;
@@ -16,43 +20,190 @@ const CERT_MAX_SHRINK: f64 = 0.20;
 /// - Zero:     on boundary
 /// - Positive: outside polygon OR inside a hole
 pub fn polygon_sdf(poly: &Polygon<f64>, x: f64, y: f64) -> f64 {
-    let pt = Point::new(x, y);
+    let mut min_dist_sq = f64::MAX;
+    let mut winding = 0i32;
 
-    // geo returns 0 if point is inside or on boundary, >0 if outside
-    let d_poly: f64 = poly.euclidean_distance(&pt);
-    if d_poly > 1e-12 {
-        return d_poly; // outside
-    }
-
-    // Inside or on boundary -- measure distance to nearest ring boundary
-    let d_ext: f64 = poly.exterior().euclidean_distance(&pt);
-
-    if poly.contains(&pt) {
-        // Strictly inside -- find distance to nearest ring (exterior or hole)
-        let mut min_d = d_ext;
-        for interior in poly.interiors() {
-            let dh: f64 = interior.euclidean_distance(&pt);
-            if dh < min_d {
-                min_d = dh;
+    for ring in std::iter::once(poly.exterior()).chain(poly.interiors()) {
+        let coords = ring.0.as_slice();
+        if coords.len() >= 2 {
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            {
+                let d2 = min_dist_sq_ring_simd(coords, x, y);
+                if d2 < min_dist_sq {
+                    min_dist_sq = d2;
+                }
+            }
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+            {
+                let d2 = min_dist_sq_ring_scalar(coords, x, y);
+                if d2 < min_dist_sq {
+                    min_dist_sq = d2;
+                }
             }
         }
-        return -min_d; // negative = inside
-    }
+        for w in coords.windows(2) {
+            let (ax, ay) = (w[0].x, w[0].y);
+            let (bx, by) = (w[1].x, w[1].y);
 
-    // On exterior boundary exactly
-    if d_ext < 1e-12 {
-        return 0.0;
-    }
+            // Winding number increment (robust crossing test)
+            if ay <= y {
+                if by > y && cross2d(ax - x, ay - y, bx - x, by - y) > 0.0 { winding += 1; }
+            } else {
+                if by <= y && cross2d(ax - x, ay - y, bx - x, by - y) < 0.0 { winding -= 1; }
+            }
 
-    // Inside a hole (rare but possible for holed polygons)
-    for interior in poly.interiors() {
-        let hole = Polygon::new(interior.clone(), vec![]);
-        if hole.contains(&pt) {
-            return hole.exterior().euclidean_distance(&pt); // positive = inside hole
         }
     }
 
-    0.0
+    let d = min_dist_sq.sqrt();
+    if winding != 0 { -d } else { d }  // negative = inside
+}
+
+#[inline(always)]
+fn cross2d(ux: f64, uy: f64, vx: f64, vy: f64) -> f64 { ux * vy - uy * vx }
+
+#[inline(always)]
+fn min_dist_sq_ring_scalar(coords: &[Coord<f64>], x: f64, y: f64) -> f64 {
+    let mut min_d2 = f64::MAX;
+    for w in coords.windows(2) {
+        let (ax, ay) = (w[0].x, w[0].y);
+        let (bx, by) = (w[1].x, w[1].y);
+        let (ex, ey) = (bx - ax, by - ay);
+        let t = ((x - ax) * ex + (y - ay) * ey) / (ex * ex + ey * ey + 1e-300);
+        let t = t.clamp(0.0, 1.0);
+        let (px, py) = (ax + t * ex, ay + t * ey);
+        let d2 = (x - px) * (x - px) + (y - py) * (y - py);
+        if d2 < min_d2 {
+            min_d2 = d2;
+        }
+    }
+    min_d2
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline]
+fn min_dist_sq_ring_simd(coords: &[Coord<f64>], x: f64, y: f64) -> f64 {
+    if is_x86_feature_detected!("avx") {
+        // SAFETY: guarded by runtime feature detection.
+        return unsafe { min_dist_sq_ring_avx(coords, x, y) };
+    }
+    if is_x86_feature_detected!("sse2") {
+        // SAFETY: guarded by runtime feature detection.
+        return unsafe { min_dist_sq_ring_sse2(coords, x, y) };
+    }
+    min_dist_sq_ring_scalar(coords, x, y)
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+unsafe fn min_dist_sq_ring_avx(coords: &[Coord<f64>], x: f64, y: f64) -> f64 {
+    let n = coords.len().saturating_sub(1);
+    if n == 0 {
+        return f64::MAX;
+    }
+    let mut min_d2 = f64::MAX;
+    let vx = arch::_mm256_set1_pd(x);
+    let vy = arch::_mm256_set1_pd(y);
+    let zero = arch::_mm256_set1_pd(0.0);
+    let one = arch::_mm256_set1_pd(1.0);
+    let eps = arch::_mm256_set1_pd(1e-300);
+
+    let mut i = 0usize;
+    while i + 4 <= n {
+        let ax = arch::_mm256_set_pd(coords[i + 3].x, coords[i + 2].x, coords[i + 1].x, coords[i].x);
+        let ay = arch::_mm256_set_pd(coords[i + 3].y, coords[i + 2].y, coords[i + 1].y, coords[i].y);
+        let bx = arch::_mm256_set_pd(coords[i + 4].x, coords[i + 3].x, coords[i + 2].x, coords[i + 1].x);
+        let by = arch::_mm256_set_pd(coords[i + 4].y, coords[i + 3].y, coords[i + 2].y, coords[i + 1].y);
+
+        let ex = arch::_mm256_sub_pd(bx, ax);
+        let ey = arch::_mm256_sub_pd(by, ay);
+        let num = arch::_mm256_add_pd(
+            arch::_mm256_mul_pd(arch::_mm256_sub_pd(vx, ax), ex),
+            arch::_mm256_mul_pd(arch::_mm256_sub_pd(vy, ay), ey),
+        );
+        let den = arch::_mm256_add_pd(
+            arch::_mm256_add_pd(arch::_mm256_mul_pd(ex, ex), arch::_mm256_mul_pd(ey, ey)),
+            eps,
+        );
+        let t = arch::_mm256_max_pd(zero, arch::_mm256_min_pd(one, arch::_mm256_div_pd(num, den)));
+        let px = arch::_mm256_add_pd(ax, arch::_mm256_mul_pd(t, ex));
+        let py = arch::_mm256_add_pd(ay, arch::_mm256_mul_pd(t, ey));
+        let dx = arch::_mm256_sub_pd(vx, px);
+        let dy = arch::_mm256_sub_pd(vy, py);
+        let d2 = arch::_mm256_add_pd(arch::_mm256_mul_pd(dx, dx), arch::_mm256_mul_pd(dy, dy));
+
+        let mut lanes = [0.0_f64; 4];
+        arch::_mm256_storeu_pd(lanes.as_mut_ptr(), d2);
+        for v in lanes {
+            if v < min_d2 {
+                min_d2 = v;
+            }
+        }
+        i += 4;
+    }
+    if i < n {
+        let rem = min_dist_sq_ring_scalar(&coords[i..=n], x, y);
+        if rem < min_d2 {
+            min_d2 = rem;
+        }
+    }
+    min_d2
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "sse2")]
+unsafe fn min_dist_sq_ring_sse2(coords: &[Coord<f64>], x: f64, y: f64) -> f64 {
+    let n = coords.len().saturating_sub(1);
+    if n == 0 {
+        return f64::MAX;
+    }
+    let mut min_d2 = f64::MAX;
+    let vx = arch::_mm_set1_pd(x);
+    let vy = arch::_mm_set1_pd(y);
+    let zero = arch::_mm_set1_pd(0.0);
+    let one = arch::_mm_set1_pd(1.0);
+    let eps = arch::_mm_set1_pd(1e-300);
+
+    let mut i = 0usize;
+    while i + 2 <= n {
+        let ax = arch::_mm_set_pd(coords[i + 1].x, coords[i].x);
+        let ay = arch::_mm_set_pd(coords[i + 1].y, coords[i].y);
+        let bx = arch::_mm_set_pd(coords[i + 2].x, coords[i + 1].x);
+        let by = arch::_mm_set_pd(coords[i + 2].y, coords[i + 1].y);
+
+        let ex = arch::_mm_sub_pd(bx, ax);
+        let ey = arch::_mm_sub_pd(by, ay);
+        let num = arch::_mm_add_pd(
+            arch::_mm_mul_pd(arch::_mm_sub_pd(vx, ax), ex),
+            arch::_mm_mul_pd(arch::_mm_sub_pd(vy, ay), ey),
+        );
+        let den = arch::_mm_add_pd(
+            arch::_mm_add_pd(arch::_mm_mul_pd(ex, ex), arch::_mm_mul_pd(ey, ey)),
+            eps,
+        );
+        let t = arch::_mm_max_pd(zero, arch::_mm_min_pd(one, arch::_mm_div_pd(num, den)));
+        let px = arch::_mm_add_pd(ax, arch::_mm_mul_pd(t, ex));
+        let py = arch::_mm_add_pd(ay, arch::_mm_mul_pd(t, ey));
+        let dx = arch::_mm_sub_pd(vx, px);
+        let dy = arch::_mm_sub_pd(vy, py);
+        let d2 = arch::_mm_add_pd(arch::_mm_mul_pd(dx, dx), arch::_mm_mul_pd(dy, dy));
+
+        let mut lanes = [0.0_f64; 2];
+        arch::_mm_storeu_pd(lanes.as_mut_ptr(), d2);
+        for v in lanes {
+            if v < min_d2 {
+                min_d2 = v;
+            }
+        }
+        i += 2;
+    }
+    if i < n {
+        let rem = min_dist_sq_ring_scalar(&coords[i..=n], x, y);
+        if rem < min_d2 {
+            min_d2 = rem;
+        }
+    }
+    min_d2
 }
 
 // --- Rect SDF sampling ----------------------------------------------------
@@ -205,6 +356,26 @@ mod tests {
         let poly = square();
         let d = polygon_sdf(&poly, 0.0, 5.0);
         assert!(d.abs() < 1e-6, "on boundary, got {d}");
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn simd_distance_matches_scalar() {
+        let poly = square();
+        let ring = poly.exterior().0.as_slice();
+        let samples = [(5.0, 5.0), (12.0, 5.0), (0.0, 5.0), (9.25, 1.5), (-3.0, -2.0)];
+        for &(x, y) in &samples {
+            let d2_scalar = min_dist_sq_ring_scalar(ring, x, y);
+            let d2_simd = min_dist_sq_ring_simd(ring, x, y);
+            assert!(
+                (d2_scalar - d2_simd).abs() < 1e-10,
+                "scalar={} simd={} at ({},{})",
+                d2_scalar,
+                d2_simd,
+                x,
+                y
+            );
+        }
     }
 
     #[test]

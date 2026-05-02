@@ -161,12 +161,9 @@ impl CoversIndex {
 
     /// Returns `true` if any polygon edge crosses one of the four rect edges.
     fn has_crossing(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
-        if self.order.is_empty() {
+        if self.xmin.is_empty() {
             return false;
         }
-
-        // Binary search for first edge whose xmax >= x0
-        let start = self.order.partition_point(|&i| self.xmax[i] < x0);
 
         let rect_edges = [
             (Coord { x: x0, y: y0 }, Coord { x: x1, y: y0 }),
@@ -175,12 +172,11 @@ impl CoversIndex {
             (Coord { x: x0, y: y1 }, Coord { x: x0, y: y0 }),
         ];
 
-        for &idx in &self.order[start..] {
+        for &idx in &self.order {
             if self.xmin[idx] > x1 {
-                break; // sorted by xmin, the rest are out of range
+                break;
             }
-            // AABB pre-filter
-            if self.ymax[idx] < y0 || self.ymin[idx] > y1 {
+            if self.xmax[idx] < x0 || self.ymax[idx] < y0 || self.ymin[idx] > y1 {
                 continue;
             }
             let (a, b) = (self.edges_a[idx], self.edges_b[idx]);

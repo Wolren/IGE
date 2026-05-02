@@ -1,11 +1,10 @@
 //! Parallel ray-shooting candidate-field solver (BCRS improvement).
 //!
 //! Instead of pruning angle candidates heuristically, this solver evaluates
-//! **every** candidate angle with a dense parallel ray-shooting pass.
-//! Each cell-centre in the rotated grid is tested independently via
-//! `poly.contains()` (ray-shooting), fully parallelised with Rayon across
-//! angles AND cells. The best candidates then proceed through the standard
-//! BCRS vertex-grid solve, SDF expansion, and certification.
+//! **every** candidate angle with a scanline-rasterised grid.  Each row is
+//! processed by computing all polygon-edge x-crossings at the row's centre y,
+//! then filling columns between paired crossings (even-odd rule).  This is
+//! O(n_edges + n_cols) per row instead of O(n_cols × n_edges) per cell.
 //!
 //! Pipeline
 //! --------
@@ -15,7 +14,7 @@
 //!  4. Fine solve -- vertex-grid mask (parallel), LRIH, SDF-expand, certify.
 //!  5. Return best-certified BcrsResult.
 
-use geo::{BoundingRect, Centroid, Contains, ConvexHull};
+use geo::{BoundingRect, Centroid, ConvexHull};
 use geo_types::{Coord, LineString, Point, Polygon};
 use rayon::prelude::*;
 
@@ -26,7 +25,6 @@ use super::{BcrsOptions, BcrsResult};
 use crate::axis_aligned::histogram::{lrih, lrih_vp};
 use crate::geometry::rotate_polygon;
 use crate::shared::{LirError, Rectangle, Result};
-use crate::tuning;
 
 
 
@@ -39,36 +37,141 @@ struct Candidate {
     rect_rot: (f64, f64, f64, f64),
 }
 
+/// Rotated-coordinate bundle returned by `rotate_coords_only`.
+struct RotatedCoords {
+    exterior: Vec<Coord<f64>>,
+    holes: Vec<Vec<Coord<f64>>>,
+    bbox: (f64, f64, f64, f64),
+}
+
+/// Rotate a polygon's coordinates around its centroid without allocating a
+/// `Polygon<f64>`.  The bounding-box falls out of the single coord pass.
+fn rotate_coords_only(poly: &Polygon<f64>, angle_deg: f64) -> RotatedCoords {
+    let centroid: Point<f64> = poly.centroid().map(|c| c.into()).unwrap_or(Point::new(0.0, 0.0));
+    let (cx, cy) = (centroid.x(), centroid.y());
+    let rad = -angle_deg.to_radians();
+    let (cos_a, sin_a) = (rad.cos(), rad.sin());
+
+    let mut minx = f64::MAX; let mut miny = f64::MAX;
+    let mut maxx = f64::MIN; let mut maxy = f64::MIN;
+
+    let rotate = |c: &Coord<f64>| -> Coord<f64> {
+        let dx = c.x - cx; let dy = c.y - cy;
+        Coord {
+            x: cx + dx * cos_a - dy * sin_a,
+            y: cy + dx * sin_a + dy * cos_a,
+        }
+    };
+
+    let ext: Vec<Coord<f64>> = poly.exterior().0.iter().map(|c| {
+        let r = rotate(c);
+        if r.x < minx { minx = r.x } if r.x > maxx { maxx = r.x }
+        if r.y < miny { miny = r.y } if r.y > maxy { maxy = r.y }
+        r
+    }).collect();
+
+    let holes: Vec<Vec<Coord<f64>>> = poly.interiors().iter().map(|ring| {
+        ring.0.iter().map(|c| {
+            let r = rotate(c);
+            if r.x < minx { minx = r.x } if r.x > maxx { maxx = r.x }
+            if r.y < miny { miny = r.y } if r.y > maxy { maxy = r.y }
+            r
+        }).collect()
+    }).collect();
+
+    RotatedCoords { exterior: ext, holes, bbox: (minx, miny, maxx, maxy) }
+}
+
 // --- Parallel mask builder ------------------------------------------------
 
-fn build_mask_parallel(poly: &Polygon<f64>, xs: &[f64], ys: &[f64]) -> Vec<Vec<bool>> {
+fn build_mask_parallel(
+    exterior: &[Coord<f64>],
+    interiors: &[Vec<Coord<f64>>],
+    xs: &[f64],
+    ys: &[f64],
+) -> Vec<bool> {
     let n_cols = xs.len().saturating_sub(1);
     let n_rows = ys.len().saturating_sub(1);
-    if n_cols == 0 || n_rows == 0 {
-        return vec![vec![]; n_rows];
+    if n_cols == 0 || n_rows == 0 { return Vec::new(); }
+
+    #[derive(Clone, Copy)]
+    struct ActiveEdge {
+        y_min: f64,
+        y_max: f64,
+        x: f64,
+        dx_dy: f64,
     }
-    let total = n_rows * n_cols;
-    let mut flat = vec![false; total];
-    flat.par_iter_mut().enumerate().for_each(|(i, cell)| {
-        let row = i / n_cols;
-        let col = i % n_cols;
-        let cx = (xs[col] + xs[col + 1]) * 0.5;
-        let cy = (ys[row] + ys[row + 1]) * 0.5;
-        *cell = poly.contains(&Point::new(cx, cy));
-    });
-    let mut mask = vec![vec![false; n_cols]; n_rows];
-    for row in 0..n_rows {
-        mask[row].copy_from_slice(&flat[row * n_cols..(row + 1) * n_cols]);
+
+    let mut mask = vec![false; n_cols * n_rows];
+    let mut edges: Vec<ActiveEdge> = Vec::new();
+    for coords in std::iter::once(exterior).chain(interiors.iter().map(|h| h.as_slice())) {
+        for w in coords.windows(2) {
+            let a = w[0];
+            let b = w[1];
+            let dy = b.y - a.y;
+            if dy.abs() < 1e-12 {
+                continue;
+            }
+            let (lower, upper) = if a.y < b.y { (a, b) } else { (b, a) };
+            let span_y = upper.y - lower.y;
+            edges.push(ActiveEdge {
+                y_min: lower.y,
+                y_max: upper.y,
+                x: lower.x,
+                dx_dy: (upper.x - lower.x) / span_y,
+            });
+        }
     }
+    edges.sort_by(|a, b| a.y_min.partial_cmp(&b.y_min).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut active: Vec<ActiveEdge> = Vec::new();
+    let mut next_e = 0usize;
+    for r in 0..n_rows {
+        let y = (ys[r] + ys[r + 1]) * 0.5;
+
+        active.retain(|e| y < e.y_max);
+        while next_e < edges.len() && edges[next_e].y_min <= y {
+            if y < edges[next_e].y_max {
+                let e = edges[next_e];
+                active.push(ActiveEdge {
+                    y_min: y,
+                    y_max: e.y_max,
+                    x: e.x + (y - e.y_min) * e.dx_dy,
+                    dx_dy: e.dx_dy,
+                });
+            }
+            next_e += 1;
+        }
+
+        for e in &mut active {
+            e.x += (y - e.y_min) * e.dx_dy;
+            e.y_min = y;
+        }
+        active.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut inside = false;
+        let mut cross = 0usize;
+        let base = r * n_cols;
+        for c in 0..n_cols {
+            let cx = (xs[c] + xs[c + 1]) * 0.5;
+            while cross < active.len() && active[cross].x < cx {
+                inside = !inside;
+                cross += 1;
+            }
+            mask[base + c] = inside;
+        }
+    }
+
     mask
 }
 
 // --- Angle generation -----------------------------------------------------
 
-fn generate_angles(poly: &Polygon<f64>) -> Vec<f64> {
+fn generate_angles(poly: &Polygon<f64>, options: &BcrsOptions) -> Vec<f64> {
     let mut angles = edge_candidate_angles(poly, 4.0, 12);
-    if angles.len() < crate::tuning::FIELD_MIN_ANGLES {
-        for step_deg in (crate::tuning::FIELD_ANGLE_STEP..90).step_by(crate::tuning::FIELD_ANGLE_STEP) {
+    if angles.len() < options.field_min_angles {
+        let step = options.field_angle_step.max(1);
+        for step_deg in (step..90).step_by(step) {
             let a = step_deg as f64;
             if !angles.iter().any(|&ea| (ea - a).abs() < 0.5) {
                 angles.push(a);
@@ -91,12 +194,8 @@ fn coarse_evaluate_angles(
     angles
         .par_iter()
         .filter_map(|&angle| {
-            let rot = rotate_polygon(poly, -angle);
-            let bb = rot.bounding_rect()?;
-            let minx = bb.min().x;
-            let miny = bb.min().y;
-            let maxx = bb.max().x;
-            let maxy = bb.max().y;
+            let rc = rotate_coords_only(poly, angle);
+            let (minx, miny, maxx, maxy) = rc.bbox;
             if maxx <= minx || maxy <= miny || coarse_steps < 2 {
                 return None;
             }
@@ -108,41 +207,89 @@ fn coarse_evaluate_angles(
                 .map(|i| miny + (maxy - miny) * i as f64 / (coarse_steps - 1) as f64)
                 .collect();
 
-            let mask = build_mask_parallel(&rot, &xs, &ys);
+            let mask = build_mask_parallel(&rc.exterior, &rc.holes, &xs, &ys);
             let n_cols = xs.len().saturating_sub(1);
+            let n_rows = ys.len().saturating_sub(1);
+            if n_cols == 0 || n_rows == 0 {
+                return None;
+            }
 
             let mut heights = vec![0usize; n_cols];
             let mut best_local: Option<(f64, f64, f64, f64, f64)> = None;
 
-            for r in 0..n_cols.max(coarse_steps.min(xs.len() - 1)) {
-                let row_idx = r.min(coarse_steps.saturating_sub(1)).min(mask.len().saturating_sub(1));
-                let md = &mask[row_idx];
-                for c in 0..n_cols.min(md.len()) {
-                    if md[c] {
+            for r in 0..n_rows {
+                let base = r * n_cols;
+                for c in 0..n_cols {
+                    if mask[base + c] {
                         heights[c] += 1;
                     } else {
                         heights[c] = 0;
                     }
                 }
-                let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, row_idx, max_ratio);
+                let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio);
                 if area > 0.0 {
-                    if let Some((_, _, _, _, ref best_area)) = best_local {
-                        if area > *best_area {
-                            best_local = Some((x0, y0, x1, y1, area));
-                        }
-                    } else {
-                        best_local = Some((x0, y0, x1, y1, area));
-                    }
+                    best_local = match best_local {
+                        Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
+                        None => Some((x0, y0, x1, y1, area)),
+                        _ => best_local,
+                    };
                 }
             }
 
-            best_local.map(|(x0, y0, x1, y1, area)| Candidate {
-                angle,
-                area,
-                rect_rot: (x0, y0, x1, y1),
-            })
+            best_local.map(|(x0, y0, x1, y1, area)| Candidate { angle, area, rect_rot: (x0, y0, x1, y1) })
         })
         .collect()
+}
+
+fn coarse_evaluate_angle(
+    poly: &Polygon<f64>,
+    angle: f64,
+    coarse_steps: usize,
+    max_ratio: f64,
+) -> Option<Candidate> {
+    let rc = rotate_coords_only(poly, angle);
+    let (minx, miny, maxx, maxy) = rc.bbox;
+    if maxx <= minx || maxy <= miny || coarse_steps < 2 {
+        return None;
+    }
+
+    let xs: Vec<f64> = (0..coarse_steps)
+        .map(|i| minx + (maxx - minx) * i as f64 / (coarse_steps - 1) as f64)
+        .collect();
+    let ys: Vec<f64> = (0..coarse_steps)
+        .map(|i| miny + (maxy - miny) * i as f64 / (coarse_steps - 1) as f64)
+        .collect();
+
+    let mask = build_mask_parallel(&rc.exterior, &rc.holes, &xs, &ys);
+    let n_cols = xs.len().saturating_sub(1);
+    let n_rows = ys.len().saturating_sub(1);
+    if n_cols == 0 || n_rows == 0 {
+        return None;
+    }
+
+    let mut heights = vec![0usize; n_cols];
+    let mut best_local: Option<(f64, f64, f64, f64, f64)> = None;
+
+    for r in 0..n_rows {
+        let base = r * n_cols;
+        for c in 0..n_cols {
+            if mask[base + c] {
+                heights[c] += 1;
+            } else {
+                heights[c] = 0;
+            }
+        }
+        let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio);
+        if area > 0.0 {
+            best_local = match best_local {
+                Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
+                None => Some((x0, y0, x1, y1, area)),
+                _ => best_local,
+            };
+        }
+    }
+
+    best_local.map(|(x0, y0, x1, y1, area)| Candidate { angle, area, rect_rot: (x0, y0, x1, y1) })
 }
 
 // --- Fine solve -----------------------------------------------------------
@@ -152,35 +299,43 @@ fn fine_solve_candidate(
     candidate: &Candidate,
     max_ratio: f64,
     always_return: bool,
+    field_max_coords: usize,
+    cert_eps: f64,
+    cert_max_shrink: f64,
 ) -> Option<BcrsResult> {
     let angle = candidate.angle;
     let centroid: Point<f64> = poly.centroid()?.into();
 
-    let rot = rotate_polygon(poly, -angle);
+    // Rotate once — no full Polygon allocation needed for the coord pass.
+    let rc = rotate_coords_only(poly, angle);
+    let rot = Polygon::new(
+        LineString::from(rc.exterior.clone()),
+        rc.holes.iter().map(|h| LineString::from(h.clone())).collect(),
+    );
 
-    let mut xs_raw: Vec<f64> = rot.exterior().0.iter().map(|c| c.x).collect();
-    let mut ys_raw: Vec<f64> = rot.exterior().0.iter().map(|c| c.y).collect();
-    for interior in rot.interiors() {
-        for c in interior.0.iter() {
+    let mut xs_raw: Vec<f64> = rc.exterior.iter().map(|c| c.x).collect();
+    let mut ys_raw: Vec<f64> = rc.exterior.iter().map(|c| c.y).collect();
+    for hole in &rc.holes {
+        for c in hole {
             xs_raw.push(c.x);
             ys_raw.push(c.y);
         }
     }
-    let bb = rot.bounding_rect()?;
-    xs_raw.push(bb.min().x);
-    xs_raw.push(bb.max().x);
-    ys_raw.push(bb.min().y);
-    ys_raw.push(bb.max().y);
+    let (bb_minx, bb_miny, bb_maxx, bb_maxy) = rc.bbox;
+    xs_raw.push(bb_minx);
+    xs_raw.push(bb_maxx);
+    ys_raw.push(bb_miny);
+    ys_raw.push(bb_maxy);
 
     xs_raw.sort_by(|a, b| a.partial_cmp(b).unwrap());
     ys_raw.sort_by(|a, b| a.partial_cmp(b).unwrap());
     xs_raw.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
     ys_raw.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
 
-    if xs_raw.len() > crate::tuning::FIELD_MAX_COORDS || ys_raw.len() > crate::tuning::FIELD_MAX_COORDS {
+    if xs_raw.len() > field_max_coords || ys_raw.len() > field_max_coords {
         let (sx0, sy0, sx1, sy1) = candidate.rect_rot;
         let expanded = expand_rect_to_boundary(&rot, sx0, sy0, sx1, sy1, max_ratio);
-        return build_result(poly, angle, expanded, max_ratio, always_return, &centroid, tuning::CERT_EPS, tuning::CERT_MAX_SHRINK);
+        return build_result(poly, angle, expanded, max_ratio, always_return, &centroid, cert_eps, cert_max_shrink);
     }
 
     let n_cols = xs_raw.len().saturating_sub(1);
@@ -189,7 +344,7 @@ fn fine_solve_candidate(
         return None;
     }
 
-    let mask = build_mask_parallel(&rot, &xs_raw, &ys_raw);
+    let mask = build_mask_parallel(&rc.exterior, &rc.holes, &xs_raw, &ys_raw);
     let mut heights = vec![0usize; n_cols];
     let mut best_local: Option<(f64, f64, f64, f64, f64)> = None;
 
@@ -199,8 +354,9 @@ fn fine_solve_candidate(
     }
 
     for r in 0..n_rows {
+        let base = r * n_cols;
         for c in 0..n_cols {
-            if mask[r][c] {
+            if mask[base + c] {
                 heights[c] += 1;
             } else {
                 heights[c] = 0;
@@ -208,19 +364,17 @@ fn fine_solve_candidate(
         }
         let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs_raw, &ys_raw, r, max_ratio);
         if area > 0.0 {
-            if let Some((_, _, _, _, ref best_area)) = best_local {
-                if area > *best_area {
-                    best_local = Some((x0, y0, x1, y1, area));
-                }
-            } else {
-                best_local = Some((x0, y0, x1, y1, area));
-            }
+            best_local = match best_local {
+                Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
+                None => Some((x0, y0, x1, y1, area)),
+                _ => best_local,
+            };
         }
     }
 
     let (fx0, fy0, fx1, fy1, _) = best_local?;
     let expanded = expand_rect_to_boundary(&rot, fx0, fy0, fx1, fy1, max_ratio);
-    build_result(poly, angle, expanded, max_ratio, always_return, &centroid, tuning::CERT_EPS, tuning::CERT_MAX_SHRINK)
+    build_result(poly, angle, expanded, max_ratio, always_return, &centroid, cert_eps, cert_max_shrink)
 }
 
 // --- Certification & result -----------------------------------------------
@@ -328,26 +482,62 @@ pub fn solve_bcrs_parallel(poly: &Polygon<f64>, options: &BcrsOptions) -> Result
         LirError::InvalidPolygon("Polygon has <3 vertices or zero area".to_string())
     })?;
 
-    let all_angles = generate_angles(&poly);
+    let all_angles = generate_angles(&poly, options);
 
-    // UB pre-filter: compute upper-bound area for each candidate angle via
-    // cheap convex-hull rotation.  Prune angles whose UB is <10% of the best.
-    // This filters out truly hopeless orientations without sacrificing accuracy.
+    // UB-guided coarse search:
+    // 1) score each angle with a true geometric upper bound,
+    // 2) evaluate in descending UB order,
+    // 3) stop once remaining UB cannot enter the current top-k coarse set.
+    // This preserves coarse top-k correctness while skipping hopeless angles.
     let hull = poly.convex_hull();
     let coarse_steps = options.grid_coarse.max(8);
     let hull_centroid: Point<f64> = hull.centroid().map(|c| c.into()).unwrap_or(Point::new(0.0, 0.0));
 
-    let ub_scored: Vec<(f64, f64)> = all_angles.par_iter().filter_map(|&a| {
+    let mut ub_scored: Vec<(f64, f64)> = all_angles.par_iter().filter_map(|&a| {
         let ub = upper_bound_area(&hull, a, options.max_ratio, hull_centroid);
         if ub > 0.0 { Some((a, ub)) } else { None }
     }).collect();
-    let best_ub = ub_scored.iter().map(|(_, u)| *u).fold(0.0_f64, f64::max);
-    let angles: Vec<f64> = ub_scored.into_iter()
-        .filter(|(_, ub)| *ub >= best_ub * 0.10)
-        .map(|(a, _)| a)
-        .collect();
+    ub_scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut candidates = coarse_evaluate_angles(&poly, &angles, coarse_steps, options.max_ratio);
+    let top_needed = options.top_k.max(5);
+    let mut top_areas: Vec<f64> = Vec::new();
+    let mut evaluated_angles: Vec<f64> = Vec::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
+
+    for (angle, ub) in ub_scored {
+        if top_areas.len() >= top_needed {
+            let mut kth_area = f64::INFINITY;
+            for &a in &top_areas {
+                if a < kth_area {
+                    kth_area = a;
+                }
+            }
+            if ub <= kth_area {
+                break;
+            }
+        }
+
+        evaluated_angles.push(angle);
+        if let Some(c) = coarse_evaluate_angle(&poly, angle, coarse_steps, options.max_ratio) {
+            let area = c.area;
+            if top_areas.len() < top_needed {
+                top_areas.push(area);
+            } else {
+                let mut min_i = 0usize;
+                let mut min_v = top_areas[0];
+                for (i, &v) in top_areas.iter().enumerate().skip(1) {
+                    if v < min_v {
+                        min_v = v;
+                        min_i = i;
+                    }
+                }
+                if area > min_v {
+                    top_areas[min_i] = area;
+                }
+            }
+            candidates.push(c);
+        }
+    }
 
     if candidates.is_empty() {
         return Err(LirError::NoRectangleFound);
@@ -359,7 +549,7 @@ pub fn solve_bcrs_parallel(poly: &Polygon<f64>, options: &BcrsOptions) -> Result
     let refinement_angles: Vec<f64> = best_angles.iter().flat_map(|&base| {
         vec![base - 2.0, base - 1.0, base + 1.0, base + 2.0]
     }).filter(|&a| a >= 0.0 && a <= 90.0)
-    .filter(|a| !angles.iter().any(|ta| (ta - a).abs() < 0.5))
+    .filter(|a| !evaluated_angles.iter().any(|ta| (ta - a).abs() < 0.5))
     .collect();
 
     if !refinement_angles.is_empty() {
@@ -382,7 +572,17 @@ pub fn solve_bcrs_parallel(poly: &Polygon<f64>, options: &BcrsOptions) -> Result
 
     let fine_results: Vec<Option<BcrsResult>> = candidates[..top_k]
         .par_iter()
-        .map(|cand| fine_solve_candidate(&poly, cand, options.max_ratio, options.always_return))
+        .map(|cand| {
+            fine_solve_candidate(
+                &poly,
+                cand,
+                options.max_ratio,
+                options.always_return,
+                options.field_max_coords,
+                options.cert_eps,
+                options.cert_max_shrink,
+            )
+        })
         .collect();
 
     fine_results
@@ -426,9 +626,8 @@ mod tests {
 
     #[test]
     fn parallel_with_max_ratio() {
-        // 20x5 rectangle: optimal is 100 area. With max_ratio=2 the long side
-        // gets capped to 10, giving 10x5 = 50.  However maybe_fast_path bypasses
-        // max_ratio clamping for pure rectangles -- that's a separate bug.
+        // 20x5 rectangle: unconstrained optimum is 100.
+        // With max_ratio=2 the long side is capped to 10, so area should be ~50.
         let poly = Polygon::new(
             LineString::from(vec![
                 coord! {x:0.0,y:0.0}, coord! {x:20.0,y:0.0},
@@ -436,8 +635,10 @@ mod tests {
                 coord! {x:0.0,y:0.0},
             ]), vec![],
         );
-        let r = solve_bcrs_parallel(&poly, &BcrsOptions::default()).unwrap();
-        assert!(r.area > 80.0);
+        let mut opts = BcrsOptions::default();
+        opts.max_ratio = 2.0;
+        let r = solve_bcrs_parallel(&poly, &opts).unwrap();
+        assert!(r.area > 45.0 && r.area < 55.0, "area={}", r.area);
         assert!(r.rect_polygon.is_some());
     }
 

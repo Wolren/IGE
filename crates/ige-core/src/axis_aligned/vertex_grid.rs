@@ -213,7 +213,7 @@ pub fn solve_vertex_grid(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> O
     }
 
     // Stage 1 -- cell classification
-    let mut mask = vec![vec![false; n_cols]; n_rows];
+    let mut mask = vec![false; n_cols * n_rows];
 
     if n_unique <= crate::tuning::AA_SMALL_VERTEX_CUTOFF {
         // Low vertex count: use exact Point-in-Polygon for every cell centre.
@@ -223,7 +223,7 @@ pub fn solve_vertex_grid(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> O
             let cy = (ys[row] + ys[row + 1]) * 0.5;
             for col in 0..n_cols {
                 let cx = (xs[col] + xs[col + 1]) * 0.5;
-                mask[row][col] = poly.contains(&Point::new(cx, cy));
+                mask[row * n_cols + col] = poly.contains(&Point::new(cx, cy));
             }
         }
     } else {
@@ -232,7 +232,9 @@ pub fn solve_vertex_grid(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> O
         for row in 0..n_rows {
             for (col_start, col_end) in &row_intervals[row] {
                 for col in *col_start..*col_end {
-                    if col < n_cols { mask[row][col] = true; }
+                    if col < n_cols {
+                        mask[row * n_cols + col] = true;
+                    }
                 }
             }
         }
@@ -245,7 +247,11 @@ pub fn solve_vertex_grid(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> O
 
     for row in 0..n_rows {
         for col in 0..n_cols {
-            if mask[row][col] { heights[col] += 1; } else { heights[col] = 0; }
+            if mask[row * n_cols + col] {
+                heights[col] += 1;
+            } else {
+                heights[col] = 0;
+            }
         }
         let (x0, y0, x1, y1, area) = largest_rect_in_histogram(&heights, &xs, &ys, row);
         if area > best_area {

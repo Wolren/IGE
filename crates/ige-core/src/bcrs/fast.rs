@@ -34,11 +34,9 @@ pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64) -> Option<(Polygon<f
                 }
             }
             if i == 3 {
-                let a = poly.unsigned_area();
                 let cp = &coords;
                 let wp = ((cp[1].x - cp[0].x).powi(2) + (cp[1].y - cp[0].y).powi(2)).sqrt();
                 let hp = ((cp[2].x - cp[1].x).powi(2) + (cp[2].y - cp[1].y).powi(2)).sqrt();
-                let rat = if wp.min(hp) > 0.0 { wp.max(hp) / wp.min(hp) } else { 1.0 };
 
                 let e0 = (cp[1].x - cp[0].x, cp[1].y - cp[0].y);
                 let e1 = (cp[2].x - cp[1].x, cp[2].y - cp[1].y);
@@ -48,18 +46,24 @@ pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64) -> Option<(Polygon<f
                     e1.1.atan2(e1.0).to_degrees() % 90.0
                 };
 
-                let bb = poly.bounding_rect()?;
-                let cert_poly = Polygon::new(
-                    geo_types::LineString::from(vec![
-                        Coord { x: bb.min().x, y: bb.min().y },
-                        Coord { x: bb.max().x, y: bb.min().y },
-                        Coord { x: bb.max().x, y: bb.max().y },
-                        Coord { x: bb.min().x, y: bb.max().y },
-                        Coord { x: bb.min().x, y: bb.min().y },
-                    ]),
+                let rect_poly = Polygon::new(
+                    geo_types::LineString::from(vec![cp[0], cp[1], cp[2], cp[3], cp[0]]),
                     vec![],
                 );
-                return Some((cert_poly, a, ang, rat));
+                if let Some((cert_poly, cert_area)) = super::certify_and_adjust(
+                    poly,
+                    &rect_poly,
+                    max_ratio,
+                    crate::tuning::CERT_EPS,
+                    crate::tuning::CERT_MAX_SHRINK,
+                ) {
+                    let corners: Vec<_> = cert_poly.exterior().0.iter().collect();
+                    let w = ((corners[1].x - corners[0].x).powi(2) + (corners[1].y - corners[0].y).powi(2)).sqrt();
+                    let h = ((corners[2].x - corners[1].x).powi(2) + (corners[2].y - corners[1].y).powi(2)).sqrt();
+                    let rat = if w.min(h) > 0.0 { w.max(h) / w.min(h) } else { 1.0 };
+                    return Some((cert_poly, cert_area, ang, rat));
+                }
+                return None;
             }
         }
     }
@@ -181,6 +185,23 @@ mod tests {
         assert!(result.is_some());
         let (_, area, _, _) = result.unwrap();
         assert!((area - 50.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn rectangle_fast_path_respects_max_ratio() {
+        let poly = Polygon::new(
+            LineString::from(vec![
+                coord! {x:0.0, y:0.0},
+                coord! {x:20.0, y:0.0},
+                coord! {x:20.0, y:5.0},
+                coord! {x:0.0, y:5.0},
+                coord! {x:0.0, y:0.0},
+            ]),
+            vec![],
+        );
+        let (_, area, _, ratio) = maybe_fast_path(&poly, 2.0).unwrap();
+        assert!(area > 45.0 && area < 55.0, "area={area}");
+        assert!(ratio <= 2.0 + 1e-9, "ratio={ratio}");
     }
 
     #[test]
