@@ -68,11 +68,17 @@ pub(crate) fn refine_best_candidate(
         let centroid = Point::new(cand.center.x(), cand.center.y());
         let orig_angle = cand.angle;
 
-        let cand_a = polish_angle(poly, cand, grid_coarse, max_ratio, &mut stage3_cache);
+        let (cand_a, bracket_width) = polish_angle(poly, cand, grid_coarse, max_ratio, &mut stage3_cache);
         let brent_angle = cand_a.angle;
 
+        // Adaptive delta: scale by curvature of area-vs-angle at the optimum.
+        // Flat function (wide bracket) → larger delta to sample more broadly.
+        // Peaked function (narrow bracket) → keep tight to avoid degenerate angles.
+        let curvature = (bracket_width / crate::tuning::POLISH_XATOL).clamp(0.5, 3.0);
+        let adaptive_delta = crate::tuning::ANGLE_DELTA * curvature;
+
         let mut angles_to_try = vec![orig_angle];
-        for delta in &[0.0, crate::tuning::ANGLE_DELTA, -crate::tuning::ANGLE_DELTA] {
+        for delta in &[0.0, adaptive_delta, -adaptive_delta] {
             let a_try = brent_angle + delta;
             if a_try >= 0.0 && a_try <= 90.0 && angles_to_try.iter().all(|&x| (a_try - x).abs() > 0.01) {
                 angles_to_try.push(a_try);

@@ -282,12 +282,13 @@ fn main() {
     // Wall-clock timer for the parallel section
     let wall_start = std::time::Instant::now();
 
-    // Process all polygons in parallel with rayon, collecting (index, card, area, angle, best_effort, ms)
-    let mut results: Vec<(usize, String, f64, f64, bool, f64)> = all_polygons
+    // Process all polygons in parallel with rayon
+    let mut results: Vec<(usize, String, f64, f64, bool, f64, f64)> = all_polygons
         .par_iter()
         .enumerate()
         .map(|(idx, (id, poly))| {
             let start = std::time::Instant::now();
+            let poly_area = poly.unsigned_area();
 
             let (rp, ra, ang, be) = if use_parallel {
                 let mut opts = BcrsOptions::default();
@@ -318,8 +319,9 @@ fn main() {
                 }
             };
             let ms = start.elapsed().as_secs_f64() * 1000.0;
+            let fill_pct = if poly_area > 0.0 { ra / poly_area * 100.0 } else { 0.0 };
             let card = gen_svg_card(id, poly, rp.as_ref(), ra, ang, be, ms);
-            (idx, card, ra, ang, be, ms)
+            (idx, card, ra, ang, be, ms, fill_pct)
         })
         .collect();
 
@@ -332,11 +334,13 @@ fn main() {
     let mut failed = 0usize;
     let mut total_rect_area = 0.0;
     let mut total_poly_area = 0.0;
+    let mut per_shape_pcts: Vec<f64> = Vec::new();
 
-    for (idx, card, ra, _ang, _be, _ms) in &results {
+    for (idx, card, ra, _ang, _be, _ms, fill_pct) in &results {
         let (_, poly) = &all_polygons[*idx];
         total_poly_area += poly.unsigned_area();
         total_rect_area += ra;
+        per_shape_pcts.push(*fill_pct);
         if *ra > 0.0 { success += 1; } else { failed += 1; }
         cards.push_str(card);
     }
@@ -344,7 +348,28 @@ fn main() {
     let fill = if total_poly_area > 0.0 { total_rect_area / total_poly_area * 100.0 } else { 0.0 };
     let avg = wall_total_ms / all_polygons.len() as f64;
 
-    let html = format!(r#"<!DOCTYPE html>
+    // Per-shape fill-rate distribution
+    per_shape_pcts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = per_shape_pcts.len();
+    let median_pct = if n > 0 { per_shape_pcts[n / 2] } else { 0.0 };
+    let mean_pct = if n > 0 { per_shape_pcts.iter().sum::<f64>() / n as f64 } else { 0.0 };
+
+    if use_json {
+        let json = serde_json::json!({
+            "success": success,
+            "total": all_polygons.len(),
+            "fill_rate": fill / 100.0,
+            "avg_ms": avg,
+            "wall_ms": wall_total_ms,
+            "per_shape_pct": {
+                "median": median_pct,
+                "mean": mean_pct,
+            },
+        });
+        println!("{}", serde_json::to_string(&json).unwrap());
+    } else {
+        let path = out_dir.join("index.html");
+        let html = format!(r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <title>IGE Visual Preview — {algo}</title>
 <style>
@@ -367,34 +392,25 @@ svg{{width:100%;height:200px;background:#0f0f23;border-radius:4px}}
 <div class="stats">
 <p><strong>Success:</strong> {ok}/{n} ({pct:.1}%) &nbsp; <strong>Failed:</strong> {fail}</p>
 <p><strong>Polygon area:</strong> {pa:.0} &nbsp; <strong>Inscribed area:</strong> {ra:.0} ({fill:.1}%)</p>
+<p><strong>Per-shape fill rate:</strong> median {median_pct:.1}% &nbsp; mean {mean_pct:.1}%</p>
 <p><strong>Total time:</strong> {t:.1}ms &nbsp; <strong>Avg:</strong> {avg:.2}ms/shape</p>
 </div>
 <div class="grid">{cards}</div>
 </body></html>"#,
-        algo = algo_name,
-        n = all_polygons.len(),
-        ok = success,
-        pct = success as f64 / all_polygons.len() as f64 * 100.0,
-        fail = failed,
-        pa = total_poly_area,
-        ra = total_rect_area,
-        fill = fill,
-        t = wall_total_ms,
-        avg = avg,
-        cards = cards,
-    );
-
-    if use_json {
-        let json = serde_json::json!({
-            "success": success,
-            "total": all_polygons.len(),
-            "fill_rate": fill / 100.0,
-            "avg_ms": avg,
-            "wall_ms": wall_total_ms,
-        });
-        println!("{}", serde_json::to_string(&json).unwrap());
-    } else {
-        let path = out_dir.join("index.html");
+            algo = algo_name,
+            n = all_polygons.len(),
+            ok = success,
+            pct = success as f64 / all_polygons.len() as f64 * 100.0,
+            fail = failed,
+            pa = total_poly_area,
+            ra = total_rect_area,
+            fill = fill,
+            median_pct = median_pct,
+            mean_pct = mean_pct,
+            t = wall_total_ms,
+            avg = avg,
+            cards = cards,
+        );
         fs::write(&path, &html).unwrap();
         println!("Generated: {}  ({algo_name})", path.display());
     }

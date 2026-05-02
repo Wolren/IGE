@@ -227,6 +227,91 @@ mod tests {
         assert!(ub > 0.0);
     }
 }
+/// Principal axis angle of the convex hull in [0, 90).
+///
+/// Computed from the eigen-direction of the covariance matrix of hull vertices.
+/// Captures the dominant orientation of elongated shapes, complementing edge
+/// directions which can be misleading for non-convex or multi-lobed polygons.
+fn principal_axis_angle(hull: &Polygon<f64>) -> f64 {
+    let pts = &hull.exterior().0;
+    let n = pts.len();
+    if n < 4 {
+        return 0.0;
+    }
+    let n = n - 1; // last is a copy of first
+
+    let mut cx = 0.0_f64;
+    let mut cy = 0.0_f64;
+    for p in pts.iter().take(n) {
+        cx += p.x;
+        cy += p.y;
+    }
+    cx /= n as f64;
+    cy /= n as f64;
+
+    let mut xx = 0.0_f64;
+    let mut xy = 0.0_f64;
+    let mut yy = 0.0_f64;
+    for p in pts.iter().take(n) {
+        let dx = p.x - cx;
+        let dy = p.y - cy;
+        xx += dx * dx;
+        xy += dx * dy;
+        yy += dy * dy;
+    }
+
+    let angle = 0.5 * (2.0 * xy).atan2(xx - yy);
+    let deg = angle.to_degrees() % 90.0;
+    if deg < 0.0 { deg + 90.0 } else { deg }
+}
+
+/// Minimum bounding rectangle (MBR) angle of the convex hull in [0, 90).
+///
+/// The MBR of a convex polygon always has one side collinear with a hull edge.
+/// This tries all hull edges (O(m²) with m ≪ 50) and returns the angle of the
+/// edge that minimises the rotated bounding-box area.
+fn mbr_angle(hull: &Polygon<f64>) -> f64 {
+    let pts = &hull.exterior().0;
+    let m = pts.len();
+    if m < 4 {
+        return 0.0;
+    }
+    let m = m - 1; // last is a copy of first
+
+    let mut best_area = f64::MAX;
+    let mut best_angle = 0.0_f64;
+
+    for i in 0..m {
+        let p1 = pts[i];
+        let p2 = pts[(i + 1) % m];
+        let rad = -(p2.y - p1.y).atan2(p2.x - p1.x);
+        let (cos_a, sin_a) = (rad.cos(), rad.sin());
+
+        let mut min_x = f64::MAX;
+        let mut min_y = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut max_y = f64::MIN;
+
+        for p in pts.iter().take(m) {
+            let rx = p.x * cos_a - p.y * sin_a;
+            let ry = p.x * sin_a + p.y * cos_a;
+            min_x = min_x.min(rx);
+            min_y = min_y.min(ry);
+            max_x = max_x.max(rx);
+            max_y = max_y.max(ry);
+        }
+
+        let area = (max_x - min_x) * (max_y - min_y);
+        if area < best_area {
+            best_area = area;
+            best_angle = (p2.y - p1.y).atan2(p2.x - p1.x).to_degrees();
+        }
+    }
+
+    let deg = best_angle % 90.0;
+    if deg < 0.0 { deg + 90.0 } else { deg }
+}
+
 pub(crate) fn heuristic_candidates(
     poly: &Polygon<f64>,
     angle_step: usize,
@@ -249,35 +334,48 @@ pub(crate) fn heuristic_candidates(
 
     let edge_angles = edge_candidate_angles(poly, 4.0, 12);
 
-    // Parallel: evaluate all edge angles independently
-    let mut raw: Vec<(f64, f64, (f64, f64, f64, f64))> = edge_angles
+    // Supplement edge-direction peaks with principal-axis and MBR angles
+    let mut all_angles = edge_angles;
+    {
+        let pa = principal_axis_angle(&hull);
+        if !all_angles.iter().any(|&a| (a - pa).abs() < 2.0) {
+            all_angles.push(pa);
+        }
+        let ma = mbr_angle(&hull);
+        if !all_angles.iter().any(|&a| (a - ma).abs() < 2.0) {
+            all_angles.push(ma);
+        }
+    }
+
+    // Parallel: evaluate all candidate angles independently
+    let mut raw: Vec<(f64, f64, (f64, f64, f64, f64))> = all_angles
         .par_iter()
         .filter_map(|&a| {
             solve_coarse(a).map(|(x0, y0, x1, y1, area)| (area, a, (x0, y0, x1, y1)))
         })
         .collect();
 
-    // Serial fallback: fill with regular angles if too few candidates
-    let mut best_area = raw.iter().map(|r| r.0).fold(0.0_f64, f64::max);
+    // Parallel fallback: fill with regular angles if too few candidates
     if raw.len() < 3 {
-        for a_int in (0..90).step_by(angle_step) {
-            let a = a_int as f64;
-            if raw.iter().any(|&(_, angle, _)| (angle - a).abs() < 2.0) {
-                continue;
-            }
-            let ub = upper_bound_area(&hull, a, max_ratio, centroid);
-            if ub <= best_area * crate::tuning::PRUNE_MARGIN {
-                continue;
-            }
-            if let Some((x0, y0, x1, y1, area)) = solve_coarse(a) {
-                if area > 0.0 {
-                    raw.push((area, a, (x0, y0, x1, y1)));
+        let best_area = raw.iter().map(|r| r.0).fold(0.0_f64, f64::max);
+        let step_angles: Vec<f64> = (0..90).step_by(angle_step).map(|a| a as f64).collect();
+
+        let fallback: Vec<(f64, f64, (f64, f64, f64, f64))> = step_angles
+            .par_iter()
+            .filter_map(|&a| {
+                if raw.iter().any(|&(_, angle, _)| (angle - a).abs() < 2.0) {
+                    return None;
                 }
-                if area > best_area {
-                    best_area = area;
+                let ub = upper_bound_area(&hull, a, max_ratio, centroid);
+                if ub <= best_area * crate::tuning::PRUNE_MARGIN {
+                    return None;
                 }
-            }
-        }
+                solve_coarse(a).and_then(|(x0, y0, x1, y1, area)| {
+                    if area > 0.0 { Some((area, a, (x0, y0, x1, y1))) } else { None }
+                })
+            })
+            .collect();
+        raw.extend(fallback);
     }
 
     raw.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));

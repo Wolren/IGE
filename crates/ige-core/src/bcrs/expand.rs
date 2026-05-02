@@ -11,16 +11,201 @@ use crate::axis_aligned::sdf::polygon_sdf;
 
 const BINARY_STEPS: usize = crate::tuning::EXPAND_BINARY_STEPS;
 const EXPAND_ITERS: usize = crate::tuning::EXPAND_ITERS;
+const SDF_PROBES: usize = 5;
+
+/// Sample the SDF at `probes` points along a vertical line (fixed x, varying y)
+/// using recursive SDF evaluation: the Lipschitz property (|SDF(a)-SDF(b)| ≤ |a-b|)
+/// means a far-inside evaluation guarantees nearby probes are also inside,
+/// eliminating redundant distance computations.
+///
+/// Evaluates probes left-to-right.  After each evaluation at position yᵢ with
+/// SDF = dᵢ, any probe within distance dᵢ of yᵢ is guaranteed inside (SDF > 0)
+/// and is skipped.  The returned value is a conservative lower bound on the
+/// minimum SDF across all probes — safe for use as the binary-search ceiling.
+fn multi_probe_sdf_v(
+    poly: &Polygon<f64>,
+    x_fixed: f64,
+    y_lo: f64,
+    y_hi: f64,
+    probes: usize,
+) -> f64 {
+    if probes == 0 {
+        return f64::MAX;
+    }
+    let span = y_hi - y_lo;
+    let mut min_sdf = f64::MAX;
+    let mut last_y = f64::NAN;
+    let mut last_sdf = f64::NAN;
+
+    for i in 0..probes {
+        let t = (i as f64 + 0.5) / probes as f64;
+        let y = y_lo + span * t;
+
+        // Lipschitz skip: if last evaluated probe guarantees this point is inside
+        if last_sdf.is_finite() {
+            let dist = (y - last_y).abs();
+            if last_sdf - dist > 0.0 {
+                // Conservative bound: actual SDF(y) ≥ last_sdf - dist
+                let bound = last_sdf - dist;
+                if bound < min_sdf {
+                    min_sdf = bound;
+                }
+                continue;
+            }
+        }
+
+        let sdf = polygon_sdf(poly, x_fixed, y);
+        last_y = y;
+        last_sdf = sdf;
+        if sdf < min_sdf {
+            min_sdf = sdf;
+        }
+    }
+    min_sdf
+}
+
+/// Sample the SDF at `probes` points along a horizontal line (fixed y, varying x)
+/// using the same Lipschitz-skip optimisation.
+fn multi_probe_sdf_h(
+    poly: &Polygon<f64>,
+    y_fixed: f64,
+    x_lo: f64,
+    x_hi: f64,
+    probes: usize,
+) -> f64 {
+    if probes == 0 {
+        return f64::MAX;
+    }
+    let span = x_hi - x_lo;
+    let mut min_sdf = f64::MAX;
+    let mut last_x = f64::NAN;
+    let mut last_sdf = f64::NAN;
+
+    for i in 0..probes {
+        let t = (i as f64 + 0.5) / probes as f64;
+        let x = x_lo + span * t;
+
+        if last_sdf.is_finite() {
+            let dist = (x - last_x).abs();
+            if last_sdf - dist > 0.0 {
+                let bound = last_sdf - dist;
+                if bound < min_sdf {
+                    min_sdf = bound;
+                }
+                continue;
+            }
+        }
+
+        let sdf = polygon_sdf(poly, x, y_fixed);
+        last_x = x;
+        last_sdf = sdf;
+        if sdf < min_sdf {
+            min_sdf = sdf;
+        }
+    }
+    min_sdf
+}
+
+/// Pre-built spatial index for fast rect-covers queries.
+///
+/// Builds once per `expand_rect_to_boundary` call. Sorts polygon edges by
+/// their x-range minimum and uses binary search + AABB pre-filter to find
+/// candidate edges that might intersect the query rect, instead of scanning
+/// all N polygon edges for every binary search step.
+struct CoversIndex {
+    edges_a: Vec<Coord<f64>>,
+    edges_b: Vec<Coord<f64>>,
+    xmin: Vec<f64>,
+    xmax: Vec<f64>,
+    ymin: Vec<f64>,
+    ymax: Vec<f64>,
+    /// Indices into the above arrays, sorted by `xmin`.
+    order: Vec<usize>,
+}
+
+impl CoversIndex {
+    fn from_polygon(poly: &Polygon<f64>) -> Self {
+        let mut edges_a = Vec::new();
+        let mut edges_b = Vec::new();
+
+        let mut add_ring = |ring: &LineString<f64>| {
+            let n = ring.0.len();
+            for i in 0..n.saturating_sub(1) {
+                edges_a.push(ring.0[i]);
+                edges_b.push(ring.0[i + 1]);
+            }
+        };
+        add_ring(poly.exterior());
+        for hole in poly.interiors() {
+            add_ring(hole);
+        }
+
+        let n = edges_a.len();
+        let mut xmin = Vec::with_capacity(n);
+        let mut xmax = Vec::with_capacity(n);
+        let mut ymin = Vec::with_capacity(n);
+        let mut ymax = Vec::with_capacity(n);
+        for i in 0..n {
+            let (a, b) = (edges_a[i], edges_b[i]);
+            xmin.push(a.x.min(b.x));
+            xmax.push(a.x.max(b.x));
+            ymin.push(a.y.min(b.y));
+            ymax.push(a.y.max(b.y));
+        }
+
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_unstable_by(|&i, &j| xmin[i].partial_cmp(&xmin[j]).unwrap());
+
+        CoversIndex { edges_a, edges_b, xmin, xmax, ymin, ymax, order }
+    }
+
+    /// Returns `true` if any polygon edge crosses one of the four rect edges.
+    fn has_crossing(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
+        if self.order.is_empty() {
+            return false;
+        }
+
+        // Binary search for first edge whose xmax >= x0
+        let start = self.order.partition_point(|&i| self.xmax[i] < x0);
+
+        let rect_edges = [
+            (Coord { x: x0, y: y0 }, Coord { x: x1, y: y0 }),
+            (Coord { x: x1, y: y0 }, Coord { x: x1, y: y1 }),
+            (Coord { x: x1, y: y1 }, Coord { x: x0, y: y1 }),
+            (Coord { x: x0, y: y1 }, Coord { x: x0, y: y0 }),
+        ];
+
+        for &idx in &self.order[start..] {
+            if self.xmin[idx] > x1 {
+                break; // sorted by xmin, the rest are out of range
+            }
+            // AABB pre-filter
+            if self.ymax[idx] < y0 || self.ymin[idx] > y1 {
+                continue;
+            }
+            let (a, b) = (self.edges_a[idx], self.edges_b[idx]);
+            for &(ra, rb) in &rect_edges {
+                if segments_intersect(ra, rb, a, b) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
 
 /// Proper geometric containment check: verifies all 4 corners are inside AND
 /// no rect edge intersects the polygon boundary. Equivalent to Shapely's
 /// `prep.covers(box(x0,y0,x1,y1))`.
-fn rect_covers(poly: &Polygon<f64>, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
+///
+/// Uses a pre-built spatial index for the edge-crossing test to avoid
+/// O(n) ring traversal on every call.
+fn rect_covers(index: &CoversIndex, poly: &Polygon<f64>, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
     if x1 - x0 < 1e-12 || y1 - y0 < 1e-12 {
         return false;
     }
 
-    // Stage 1: fast corner check (catches most rejections early)
+    // Stage 1: fast corner check (4 point-in-polygon tests)
     let corners = [
         Point::new(x0, y0),
         Point::new(x1, y0),
@@ -31,45 +216,8 @@ fn rect_covers(poly: &Polygon<f64>, x0: f64, y0: f64, x1: f64, y1: f64) -> bool 
         return false;
     }
 
-    // Stage 2: check no rect edge crosses the polygon boundary
-    // Build rect edges as line segments
-    let edges = [
-        (Coord { x: x0, y: y0 }, Coord { x: x1, y: y0 }), // bottom
-        (Coord { x: x1, y: y0 }, Coord { x: x1, y: y1 }), // right
-        (Coord { x: x1, y: y1 }, Coord { x: x0, y: y1 }), // top
-        (Coord { x: x0, y: y1 }, Coord { x: x0, y: y0 }), // left
-    ];
-
-    // Check against exterior ring
-    if rect_edges_intersect(&edges, poly.exterior()) {
-        return false;
-    }
-
-    // Check against interior rings (holes)
-    for interior in poly.interiors() {
-        if rect_edges_intersect(&edges, interior) {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn rect_edges_intersect(edges: &[(Coord<f64>, Coord<f64>); 4], ring: &LineString<f64>) -> bool {
-    let n = ring.0.len();
-    if n < 2 {
-        return false;
-    }
-    for i in 0..n - 1 {
-        let p1 = ring.0[i];
-        let p2 = ring.0[i + 1];
-        for &(a, b) in edges.iter() {
-            if segments_intersect(a, b, p1, p2) {
-                return true;
-            }
-        }
-    }
-    false
+    // Stage 2: use the spatial index for edge-crossing check
+    !index.has_crossing(x0, y0, x1, y1)
 }
 
 fn segments_intersect(
@@ -132,6 +280,9 @@ pub fn expand_rect_to_boundary(
     y1: f64,
     max_ratio: f64,
 ) -> (f64, f64, f64, f64) {
+    // Build spatial index once for all rect_covers queries
+    let idx = CoversIndex::from_polygon(rot_poly);
+
     let bb = match rot_poly.bounding_rect() {
         Some(b) => b,
         None => return (x0, y0, x1, y1),
@@ -147,7 +298,7 @@ pub fn expand_rect_to_boundary(
     let mut y1 = y1;
 
     // Shrink to valid start if seed slightly exceeds bounds
-    if !rect_covers(rot_poly, x0, y0, x1, y1) {
+    if !rect_covers(&idx, rot_poly, x0, y0, x1, y1) {
         let cx_c = (x0 + x1) * 0.5;
         let cy_c = (y0 + y1) * 0.5;
         let hw = (x1 - x0) * 0.5;
@@ -156,7 +307,7 @@ pub fn expand_rect_to_boundary(
         let mut hi = 1.0_f64;
         for _ in 0..36 {
             let mid = (lo + hi) * 0.5;
-            if rect_covers(rot_poly, cx_c - hw * mid, cy_c - hh * mid, cx_c + hw * mid, cy_c + hh * mid) {
+            if rect_covers(&idx, rot_poly, cx_c - hw * mid, cy_c - hh * mid, cx_c + hw * mid, cy_c + hh * mid) {
                 lo = mid;
             } else {
                 hi = mid;
@@ -170,10 +321,6 @@ pub fn expand_rect_to_boundary(
         x1 = cx_c + hw * lo;
         y1 = cy_c + hh * lo;
     }
-
-    // Pre-compute centre once per iteration
-    let mut cx_c = (x0 + x1) * 0.5;
-    let mut cy_c = (y0 + y1) * 0.5;
 
     for _ in 0..EXPAND_ITERS {
         let mut any_changed = false;
@@ -192,14 +339,14 @@ pub fn expand_rect_to_boundary(
         for &(side, _) in &expansions {
             match side {
                 0 if x0 > minx => { // Left
-                    let sdf = polygon_sdf(rot_poly, x0, cy_c);
-                    let hi_d = if sdf < 0.0 { gap_left.min(sdf.abs()) } else { gap_left };
+                    let min_sdf = multi_probe_sdf_v(rot_poly, x0, y0, y1, SDF_PROBES);
+                    let hi_d = if min_sdf < 0.0 { gap_left.min(min_sdf.abs()) } else { gap_left };
                     if hi_d > 1e-12 {
                         let mut lo_d = 0.0_f64;
                         let mut hi_d = hi_d;
                         for _ in 0..BINARY_STEPS {
                             let mid = (lo_d + hi_d) * 0.5;
-                            if rect_covers(rot_poly, x0 - mid, y0, x1, y1) {
+                            if rect_covers(&idx, rot_poly, x0 - mid, y0, x1, y1) {
                                 lo_d = mid;
                             } else {
                                 hi_d = mid;
@@ -209,14 +356,14 @@ pub fn expand_rect_to_boundary(
                     }
                 }
                 1 if x1 < maxx => { // Right
-                    let sdf = polygon_sdf(rot_poly, x1, cy_c);
-                    let hi_d = if sdf < 0.0 { gap_right.min(sdf.abs()) } else { gap_right };
+                    let min_sdf = multi_probe_sdf_v(rot_poly, x1, y0, y1, SDF_PROBES);
+                    let hi_d = if min_sdf < 0.0 { gap_right.min(min_sdf.abs()) } else { gap_right };
                     if hi_d > 1e-12 {
                         let mut lo_d = 0.0_f64;
                         let mut hi_d = hi_d;
                         for _ in 0..BINARY_STEPS {
                             let mid = (lo_d + hi_d) * 0.5;
-                            if rect_covers(rot_poly, x0, y0, x1 + mid, y1) {
+                            if rect_covers(&idx, rot_poly, x0, y0, x1 + mid, y1) {
                                 lo_d = mid;
                             } else {
                                 hi_d = mid;
@@ -225,15 +372,15 @@ pub fn expand_rect_to_boundary(
                         if lo_d > 1e-10 { x1 += lo_d; any_changed = true; }
                     }
                 }
-                2 if y0 > miny => { // Bottom
-                    let sdf = polygon_sdf(rot_poly, cx_c, y0);
-                    let hi_d = if sdf < 0.0 { gap_bottom.min(sdf.abs()) } else { gap_bottom };
+                2 if y0 > miny => { // Bottom — fix y, vary x horizontally
+                    let min_sdf = multi_probe_sdf_h(rot_poly, y0, x0, x1, SDF_PROBES);
+                    let hi_d = if min_sdf < 0.0 { gap_bottom.min(min_sdf.abs()) } else { gap_bottom };
                     if hi_d > 1e-12 {
                         let mut lo_d = 0.0_f64;
                         let mut hi_d = hi_d;
                         for _ in 0..BINARY_STEPS {
                             let mid = (lo_d + hi_d) * 0.5;
-                            if rect_covers(rot_poly, x0, y0 - mid, x1, y1) {
+                            if rect_covers(&idx, rot_poly, x0, y0 - mid, x1, y1) {
                                 lo_d = mid;
                             } else {
                                 hi_d = mid;
@@ -243,14 +390,14 @@ pub fn expand_rect_to_boundary(
                     }
                 }
                 3 if y1 < maxy => { // Top
-                    let sdf = polygon_sdf(rot_poly, cx_c, y1);
-                    let hi_d = if sdf < 0.0 { gap_top.min(sdf.abs()) } else { gap_top };
+                    let min_sdf = multi_probe_sdf_h(rot_poly, y1, x0, x1, SDF_PROBES);
+                    let hi_d = if min_sdf < 0.0 { gap_top.min(min_sdf.abs()) } else { gap_top };
                     if hi_d > 1e-12 {
                         let mut lo_d = 0.0_f64;
                         let mut hi_d = hi_d;
                         for _ in 0..BINARY_STEPS {
                             let mid = (lo_d + hi_d) * 0.5;
-                            if rect_covers(rot_poly, x0, y0, x1, y1 + mid) {
+                            if rect_covers(&idx, rot_poly, x0, y0, x1, y1 + mid) {
                                 lo_d = mid;
                             } else {
                                 hi_d = mid;
@@ -261,8 +408,6 @@ pub fn expand_rect_to_boundary(
                 }
                 _ => {}
             }
-            cx_c = (x0 + x1) * 0.5;
-            cy_c = (y0 + y1) * 0.5;
         }
 
         if !any_changed { break; }
@@ -310,8 +455,9 @@ mod tests {
             ]),
             vec![],
         );
+        let idx = CoversIndex::from_polygon(&poly);
         // This rect has all corners inside but its edge crosses the indentation
-        assert!(!rect_covers(&poly, 1.0, 1.0, 9.0, 8.0));
+        assert!(!rect_covers(&idx, &poly, 1.0, 1.0, 9.0, 8.0));
     }
 
     #[test]
@@ -326,6 +472,7 @@ mod tests {
             ]),
             vec![],
         );
-        assert!(rect_covers(&poly, 2.0, 2.0, 8.0, 8.0));
+        let idx = CoversIndex::from_polygon(&poly);
+        assert!(rect_covers(&idx, &poly, 2.0, 2.0, 8.0, 8.0));
     }
 }

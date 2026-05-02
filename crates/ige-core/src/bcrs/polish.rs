@@ -17,19 +17,22 @@ use crate::geometry::rotate_polygon;
 
 /// Golden-section search to refine a candidate angle within +/-POLISH_HALFWIDTH.
 /// Caches coarse-grid area evaluations to avoid redundant work.
+/// Returns `(polished_candidate, final_bracket_width)` where the bracket width
+/// indicates the curvature of the area-vs-angle function at the optimum
+/// (narrow bracket = peaked, wide bracket = flat).
 pub(crate) fn polish_angle(
     poly: &Polygon<f64>,
     cand: &AngleCandidate,
     grid_coarse: usize,
     max_ratio: f64,
     cache: &mut HashMap<OrderedFloat<f64>, f64>,
-) -> AngleCandidate {
+) -> (AngleCandidate, f64) {
     let angle_0 = cand.angle;
     let lo = (angle_0 - crate::tuning::POLISH_HALFWIDTH).max(0.0);
     let hi = (angle_0 + crate::tuning::POLISH_HALFWIDTH).min(90.0);
 
     if hi - lo < crate::tuning::POLISH_XATOL * 2.0 {
-        return cand.clone();
+        return (cand.clone(), hi - lo);
     }
 
     let mut neg_area = |a: f64| -> f64 {
@@ -69,14 +72,15 @@ pub(crate) fn polish_angle(
         }
     }
 
+    let bracket_width = b - a;
     let best_angle = (a + b) * 0.5;
     if (best_angle - angle_0).abs() > 0.005 {
         let mut new_cand = cand.clone();
         new_cand.angle = best_angle;
         new_cand.area = -neg_area(best_angle);
-        new_cand
+        (new_cand, bracket_width)
     } else {
-        cand.clone()
+        (cand.clone(), bracket_width)
     }
 }
 

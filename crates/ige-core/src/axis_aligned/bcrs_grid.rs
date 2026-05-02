@@ -1,12 +1,47 @@
 //! Grid-based axis-aligned rectangle solvers used by the BCRS pipeline.
 //!
-//! Port of `_solve_axis_rect_grid` (uniform coarse grid) and
-//! `_solve_axis_rect_bcrs` (vertex-coordinate grid) from `bcrs_fast_worker.py`.
+//! Port of `_solve_axis_rect_grid` (coarse grid, now using 1D Sobol quasi-random
+//! grid lines for lower-discrepancy coverage) and `_solve_axis_rect_bcrs`
+//! (vertex-coordinate grid) from `bcrs_fast_worker.py`.
 
 use geo::{BoundingRect, Contains};
 use geo_types::{Point, Polygon};
 
 use crate::axis_aligned::histogram::{lrih, lrih_vp};
+
+// --- Sobol 1D generator (Gray-code order) -----------------------------------
+//
+// Generates the van der Corput sequence in base 2 with Gray-code permutation,
+// which has provably lower discrepancy than uniform spacing in 1D.
+// Direction vectors: v[i] = 1 << (31 - i) for dimension 0 (the trivial sequence).
+
+struct Sobol1d {
+    i: u32,
+    dirs: [u32; 32],
+}
+
+impl Sobol1d {
+    fn new(start_index: u32) -> Self {
+        let mut dirs = [0u32; 32];
+        for i in 0..32 {
+            dirs[i] = 1 << (31 - i);
+        }
+        Sobol1d { i: start_index, dirs }
+    }
+
+    /// Return the next value in [0, 1).
+    fn next(&mut self) -> f64 {
+        let g = self.i ^ (self.i >> 1);
+        let mut val = 0u32;
+        for bit in 0..32 {
+            if (g >> bit) & 1 != 0 {
+                val ^= self.dirs[bit];
+            }
+        }
+        self.i += 1;
+        val as f64 / (1u64 << 32) as f64
+    }
+}
 
 // --- Uniform-grid solver (coarse / Brent) ---------------------------------
 
@@ -27,12 +62,22 @@ pub fn solve_axis_rect_grid(
         return None;
     }
 
-    let xs: Vec<f64> = (0..grid_steps)
-        .map(|i| minx + (maxx - minx) * i as f64 / (grid_steps - 1) as f64)
-        .collect();
-    let ys: Vec<f64> = (0..grid_steps)
-        .map(|i| miny + (maxy - miny) * i as f64 / (grid_steps - 1) as f64)
-        .collect();
+    // Generate grid-line positions from 1D Sobol sequences (low-discrepancy)
+    // instead of a uniform grid.  Sorted Sobol values give strictly better
+    // space-filling coverage for the same number of probe points, particularly
+    // at small grid sizes.
+    let mut sobol_x = Sobol1d::new(0);
+    let mut sobol_y = Sobol1d::new(1000);
+    let mut xs: Vec<f64> = (0..grid_steps).map(|_| sobol_x.next()).collect();
+    let mut ys: Vec<f64> = (0..grid_steps).map(|_| sobol_y.next()).collect();
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // Scale Sobol [0,1) values to fill the bounding box exactly, so the
+    // first and last probe land on the boundary just like a uniform grid.
+    let scale_x = |u: f64| minx + (maxx - minx) * u;
+    let scale_y = |u: f64| miny + (maxy - miny) * u;
+    let xs: Vec<f64> = xs.iter().map(|&u| scale_x(u)).collect();
+    let ys: Vec<f64> = ys.iter().map(|&u| scale_y(u)).collect();
 
     // Build point-inside mask at each grid-point
     let mut mask = vec![vec![false; grid_steps]; grid_steps];

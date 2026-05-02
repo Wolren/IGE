@@ -337,7 +337,7 @@ pub fn solve_bcrs_parallel(poly: &Polygon<f64>, options: &BcrsOptions) -> Result
     let coarse_steps = options.grid_coarse.max(8);
     let hull_centroid: Point<f64> = hull.centroid().map(|c| c.into()).unwrap_or(Point::new(0.0, 0.0));
 
-    let mut ub_scored: Vec<(f64, f64)> = all_angles.par_iter().filter_map(|&a| {
+    let ub_scored: Vec<(f64, f64)> = all_angles.par_iter().filter_map(|&a| {
         let ub = upper_bound_area(&hull, a, options.max_ratio, hull_centroid);
         if ub > 0.0 { Some((a, ub)) } else { None }
     }).collect();
