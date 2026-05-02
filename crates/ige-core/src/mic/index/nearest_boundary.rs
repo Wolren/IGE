@@ -1,7 +1,7 @@
 use crate::mic::input::SegmentIndex;
 
 const GRID_MIN_CELLS: usize = 4;
-const GRID_MAX_CELLS: usize = 50;
+const GRID_MAX_CELLS: usize = 128;
 
 #[derive(Debug, Clone)]
 struct GridIndex {

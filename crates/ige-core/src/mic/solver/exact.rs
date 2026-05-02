@@ -9,7 +9,8 @@ use crate::mic::{MicError, MicOptions, MicResult, MicUsedEngine, RobustMode};
 
 const CANDIDATE_QUANTIZE: f64 = 1e9;
 const MAX_TRIPLE_VERTICES: usize = 48;
-const MAX_SEG_TRIPLES: usize = 50;
+const MAX_SEG_TRIPLES: usize = 100;
+const MAX_SS_VERTICES: usize = 64;
 
 fn quantize_origin(host: &crate::mic::input::HostPolygon) -> (f64, f64) {
     let Some((min_x, min_y, max_x, _max_y)) = host.bounds() else {
@@ -44,11 +45,12 @@ pub fn solve_exact(
     let seg_ref = &workspace.seg_index;
     let cand_buf = &mut workspace.candidate_buf;
     generate_segment_triple_candidates(seg_ref, &mut seen, cand_buf, q_origin);
-
-    let vertices_ref = workspace.host.unique_vertices();
-    generate_seg_seg_vertex_candidates(seg_ref, &vertices_ref, &mut seen, cand_buf, q_origin);
+    generate_ear_candidates(&workspace.host, &mut seen, cand_buf, q_origin);
 
     if matches!(opts.robust_mode, RobustMode::Filtered) {
+        let vertices_ref = workspace.host.unique_vertices();
+        generate_seg_seg_vertex_candidates(seg_ref, &vertices_ref, &mut seen, cand_buf, q_origin);
+
         let sampled = sample_vertices(&vertices, MAX_TRIPLE_VERTICES);
         for i in 0..sampled.len() {
             for j in i + 1..sampled.len() {
@@ -210,7 +212,7 @@ fn generate_seg_seg_vertex_candidates(
         (0..seg_index.len()).step_by(step.max(1)).take(MAX_SEG_TRIPLES).collect()
     };
 
-    let max_verts = MAX_SEG_TRIPLES.min(vertices.len());
+    let max_verts = MAX_SS_VERTICES.min(vertices.len());
     let sampled_verts: Vec<[f64; 2]> = if vertices.len() <= max_verts {
         vertices.to_vec()
     } else {
@@ -271,8 +273,43 @@ fn generate_seg_seg_vertex_candidates(
                     if d_i <= 0.0 {
                         continue;
                     }
+                    let d_j = lj.nx * cx + lj.ny * cy - lj.c;
+                    if d_j <= 0.0 {
+                        continue;
+                    }
                     push_candidate(candidate_buf, seen, cx, cy, q_origin);
                 }
+            }
+        }
+    }
+}
+
+fn generate_ear_candidates(
+    host: &crate::mic::input::HostPolygon,
+    seen: &mut FxHashSet<(i64, i64)>,
+    candidate_buf: &mut Vec<MicCandidate>,
+    q_origin: (f64, f64),
+) {
+    let outer = host.outer_ring();
+    let n = outer.len();
+    if n < 4 {
+        return;
+    }
+    let verts: &[[f64; 2]] = &outer[..n - 1];
+    let m = verts.len();
+    if m < 3 {
+        return;
+    }
+    for i in 0..m {
+        let prev = if i == 0 { m - 1 } else { i - 1 };
+        let next = if i + 1 >= m { 0 } else { i + 1 };
+        let a = verts[prev];
+        let b = verts[i];
+        let c = verts[next];
+        let cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+        if cross > 1e-14 {
+            if let Some((cx, cy)) = circumcenter(a, b, c) {
+                push_candidate(candidate_buf, seen, cx, cy, q_origin);
             }
         }
     }
