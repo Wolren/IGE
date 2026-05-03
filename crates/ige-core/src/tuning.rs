@@ -7,7 +7,7 @@
 //! Ranges after each constant show reasonable min/max for OpenEvolve evolution.
 
 // -- BCRS standard pipeline (bcrs/mod.rs) ----------------------------------
-pub(crate) const TOP_K: usize = 1;               // candidates forwarded to refine [1..10]
+pub(crate) const TOP_K: usize = 10;               // candidates forwarded to refine [1..10]
 pub(crate) const GRID_COARSE: usize = 32;        // coarse sweep resolution [8..128]
 pub(crate) const GRID_FINE: usize = 64;          // fine grid for fallback [8..256]
 pub(crate) const POLISH_HALFWIDTH: f64 = 3.0;    // Brent polish +-range [1..6]

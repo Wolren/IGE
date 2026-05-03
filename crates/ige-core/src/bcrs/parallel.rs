@@ -548,8 +548,8 @@ pub fn solve_bcrs_parallel(poly: &Polygon<f64>, options: &BcrsOptions) -> Result
     let refinement_angles: Vec<f64> = best_angles.iter().flat_map(|&base| {
         vec![base - 2.0, base - 1.0, base + 1.0, base + 2.0]
     }).filter(|&a| a >= 0.0 && a <= 90.0)
-    .filter(|a| !evaluated_angles.iter().any(|ta| (ta - a).abs() < 0.5))
-    .collect();
+        .filter(|a| !evaluated_angles.iter().any(|ta| (ta - a).abs() < 0.5))
+        .collect();
 
     if !refinement_angles.is_empty() {
         let refined = coarse_evaluate_angles(&poly, &refinement_angles, coarse_steps, options.max_ratio);

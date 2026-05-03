@@ -177,7 +177,8 @@ pub(crate) fn refine_best_candidate(
             }
         }
         let centroid_fb = candidates.first().map(|c| Point::new(c.center.x(), c.center.y()))?;
-        let n_rescue = (candidates.len().min(8)).max(3);
+        let n_rescue = candidates.len().min(8);
+        if n_rescue < 3 { return None; }
         let rescue_angs: Vec<f64> = candidates[..n_rescue].iter().map(|c| c.angle).collect();
         if let Some((r, a, ang)) = conservative_inner_fallback(poly, grid_fine, max_ratio, centroid_fb, &rescue_angs) {
             let coords: Vec<_> = r.exterior().0.iter().collect();

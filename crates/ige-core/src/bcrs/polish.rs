@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use geo_types::Polygon;
 use ordered_float::OrderedFloat;
 
-use crate::axis_aligned::{solve_axis_rect_bcrs, solve_axis_rect_grid};
+use crate::axis_aligned::solve_axis_rect_bcrs;
 use super::AngleCandidate;
 use crate::bcrs::expand::expand_rect_to_boundary;
 use crate::geometry::rotate_polygon;
@@ -41,7 +41,11 @@ pub(crate) fn polish_angle(
             return -cached;
         }
         let rot = rotate_polygon(poly, -a);
-        let area = match solve_axis_rect_grid(&rot, grid_coarse, max_ratio) {
+        // Use BCRS (vertex-coordinate-based, exact precision) instead of the
+        // grid for polish evaluations.  The grid at GRID_COARSE=32 cannot
+        // distinguish angles closer than ~1°; BCRS evaluates exact vertex
+        // positions and SDF, giving sub-0.01° angular resolution.
+        let area = match solve_axis_rect_bcrs(&rot, None, max_ratio) {
             Some((_, _, _, _, a)) => a,
             None => 0.0,
         };

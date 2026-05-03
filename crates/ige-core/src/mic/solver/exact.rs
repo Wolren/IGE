@@ -94,6 +94,8 @@ pub fn solve_exact(
         push_candidate(&mut workspace.candidate_buf, &mut seen, c.x(), c.y(), q_origin);
     }
 
+
+
     // 2. All boundary vertices
     let vertices = workspace.host.unique_vertices();
     for v in &vertices {
@@ -113,8 +115,8 @@ pub fn solve_exact(
     let (triple_cap, ss_seg_cap, ss_vert_cap, segs_per_ring) =
         caps_for(seg_count, hole_count, reflex_count);
 
-    // 4. Segment-triple incenters — adaptive cap based on complexity
-    generate_segment_triple_candidates(&workspace.seg_index, &mut seen,
+    // 4. Segment-triple incenters — reflex-biased sampling (Gap B)
+    generate_segment_triple_candidates(&workspace.seg_index, &workspace.host, &mut seen,
         &mut workspace.candidate_buf, q_origin, triple_cap, segs_per_ring);
 
     // 5. CDT circumcenters
@@ -146,10 +148,10 @@ pub fn solve_exact(
     }
 
     let candidate_count = workspace.candidate_buf.len();
-    let mut best_any: Option<MicCandidate> = None;
-
     let pip_index = &workspace.pip_index;
     let nb_index = &workspace.nb_index;
+    let mut best_any: Option<MicCandidate> = None;
+
     let candidate_buf = &mut workspace.candidate_buf;
 
     for cand in candidate_buf.iter_mut() {
@@ -177,9 +179,10 @@ pub fn solve_exact(
         .unwrap_or((0.0, 0.0, 1.0, 1.0));
     let diameter = (max_x - min_x).hypot(max_y - min_y).max(1.0);
     let refine_tol = diameter * 1e-6;
-    let (ref_x, ref_y, ref_r) = refine_with_quadtree(
-        best.x, best.y, best.radius_sq.sqrt(),
-        pip_index, nb_index, refine_tol,
+    let seed_h = best.radius_sq.sqrt().max(1e-12) * 0.5;
+    let (ref_x, ref_y, ref_r) = quadtree_search(
+        best.x, best.y, best.radius_sq.sqrt(), seed_h,
+        pip_index, nb_index, refine_tol, 100,
     );
 
     let center = Point::new(ref_x, ref_y);
@@ -359,16 +362,42 @@ fn sample_segments_ring_aware(seg_index: &SegmentIndex, max_total: usize, min_pe
 
 fn generate_segment_triple_candidates(
     seg_index: &SegmentIndex,
+    host: &HostPolygon,
     seen: &mut FxHashSet<(i64, i64)>,
     candidate_buf: &mut Vec<MicCandidate>,
     q_origin: (f64, f64),
     triple_cap: usize,
-    segs_per_ring: usize,
+    _segs_per_ring: usize,
 ) {
     let n = seg_index.len();
     if n < 3 { return; }
     let lines = precompute_segment_lines(seg_index);
-    let sampled = sample_segments_ring_aware(seg_index, triple_cap, segs_per_ring);
+
+    // Reflex-biased sampling (Gap B): unconditionally include segments
+    // adjacent to reflex vertices, then fill remaining budget with
+    // ring-aware uniform sampling from non-reflex segments.
+    let sampled = if n <= triple_cap {
+        (0..n).collect()
+    } else {
+        let mut result: Vec<usize> = (0..n)
+            .filter(|&si| reflex_vertex_in_ring(host, seg_index.ring_id[si], seg_index.edge_id[si])
+                || reflex_vertex_in_ring(host, seg_index.ring_id[si], seg_index.edge_id[si] + 1))
+            .collect();
+        result.sort_unstable();
+        result.dedup();
+        if result.len() >= triple_cap {
+            result.truncate(triple_cap)
+        } else {
+            let reflex_set: FxHashSet<usize> = result.iter().copied().collect();
+            let remaining = triple_cap - result.len();
+            let non_reflex: Vec<usize> = (0..n).filter(|i| !reflex_set.contains(i)).collect();
+            if !non_reflex.is_empty() {
+                let step = (non_reflex.len() / remaining).max(1);
+                result.extend(non_reflex.iter().step_by(step).take(remaining).copied());
+            }
+        }
+        result
+    };
     for ii in 0..sampled.len() {
         let i = sampled[ii];
         for jj in ii + 1..sampled.len() {
@@ -608,22 +637,24 @@ impl Ord for QuadCell {
     }
 }
 
-fn refine_with_quadtree(
-    bx: f64, by: f64, br: f64,
+/// Run quadtree refinement with configurable iteration budget.
+/// `seed_h`: initial cell half-side. For refinement (tight seed, ~best_r/2).
+/// For primary solve (wide seed, ~diameter/4).
+fn quadtree_search(
+    init_x: f64, init_y: f64, init_r: f64,
+    seed_h: f64,
     pip: &crate::mic::index::PipIndex,
     nb: &NearestBoundaryIndex,
     tol: f64,
+    max_iters: usize,
 ) -> (f64, f64, f64) {
-    let seed_h = br.max(1e-12) * 0.5;
     let mut queue: BinaryHeap<QuadCell> = BinaryHeap::new();
-    queue.push(QuadCell(bx, by, seed_h, br + seed_h * SQRT_2));
-    let mut best_x = bx; let mut best_y = by; let mut best_r = br;
+    queue.push(QuadCell(init_x, init_y, seed_h, init_r + seed_h * SQRT_2));
+    let mut best_x = init_x; let mut best_y = init_y; let mut best_r = init_r;
     let mut iters = 0usize;
-    const MAX_ITERS: usize = 100;
-
     while let Some(QuadCell(cx, cy, h, upper)) = queue.pop() {
         iters += 1;
-        if iters > MAX_ITERS { break; }
+        if iters > max_iters { break; }
         if upper <= best_r + tol { break; }
         if h < tol { continue; }
         let h2 = h * 0.5;

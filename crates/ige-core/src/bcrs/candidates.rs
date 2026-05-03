@@ -7,6 +7,7 @@
 use geo::{BoundingRect, Centroid, ConvexHull, Rotate};
 use geo_types::{Coord, LineString, Point, Polygon};
 
+use crate::axis_aligned::sdf::polygon_sdf;
 use crate::axis_aligned::solve_axis_rect_grid;
 use crate::bcrs::AngleCandidate;
 use crate::bcrs::prepare::simplify_for_solve;
@@ -312,6 +313,44 @@ fn mbr_angle(hull: &Polygon<f64>) -> f64 {
     if deg < 0.0 { deg + 90.0 } else { deg }
 }
 
+/// Compute the tangent angle at the nearest boundary point from the centroid,
+/// using 8 polygon_sdf calls (finite-difference gradient).  The gradient at the
+/// centroid points toward the nearest edge (the MIC constraint).  The tangent
+/// (perpendicular) direction at the nearest boundary point gives a high-quality
+/// candidate angle for BCRS, recovering the optimal orientation for shapes where
+/// the edge-length histogram is dominated by long edges but the MIC sits on a
+/// shorter one (e.g. acute triangles).
+fn sdf_gradient_tangent_angle(poly: &Polygon<f64>, centroid: &Point<f64>) -> Option<f64> {
+    let cx = centroid.x();
+    let cy = centroid.y();
+    let eps = 1e-3;
+
+    // Gradient of SDF at centroid (toward nearest boundary)
+    let sdf_c = polygon_sdf(poly, cx, cy);
+    if sdf_c >= 0.0 { return None; } // centroid outside polygon
+
+    let gx = (polygon_sdf(poly, cx + eps, cy) - polygon_sdf(poly, cx - eps, cy)) / (2.0 * eps);
+    let gy = (polygon_sdf(poly, cx, cy + eps) - polygon_sdf(poly, cx, cy - eps)) / (2.0 * eps);
+    let norm = gx.hypot(gy);
+    if norm < 1e-12 { return None; }
+
+    // Step 50% toward the SDF maximum (away from nearest boundary)
+    let r = -sdf_c; // radius from centroid to nearest boundary
+    let better_cx = cx + gx / norm * r * 0.5;
+    let better_cy = cy + gy / norm * r * 0.5;
+
+    // Gradient at the improved center
+    let gx2 = (polygon_sdf(poly, better_cx + eps, better_cy) - polygon_sdf(poly, better_cx - eps, better_cy)) / (2.0 * eps);
+    let gy2 = (polygon_sdf(poly, better_cx, better_cy + eps) - polygon_sdf(poly, better_cx, better_cy - eps)) / (2.0 * eps);
+    let norm2 = gx2.hypot(gy2);
+    if norm2 < 1e-12 { return None; }
+
+    // Tangent angle = perpendicular to SDF gradient (which is the boundary normal)
+    let mut angle = gy2.atan2(gx2).to_degrees() % 90.0;
+    if angle < 0.0 { angle += 90.0; }
+    Some(angle)
+}
+
 pub(crate) fn heuristic_candidates(
     poly: &Polygon<f64>,
     angle_step: usize,
@@ -334,7 +373,13 @@ pub(crate) fn heuristic_candidates(
 
     let edge_angles = edge_candidate_angles(poly, 4.0, 12);
 
-    // Supplement edge-direction peaks with principal-axis and MBR angles
+    // SDF gradient seed: ~8 polygon_sdf calls to get a better center and the
+    // tangent angle at the nearest boundary point.  The tangent angle captures
+    // the optimal BCRS orientation for shapes where the longest edge dominates
+    // the histogram but the MIC sits on a shorter edge (e.g. acute triangles).
+    let sdf_angle = sdf_gradient_tangent_angle(poly, &centroid);
+
+    // Supplement edge-direction peaks with principal-axis, MBR, and SDF angles
     let mut all_angles = edge_angles;
     {
         let pa = principal_axis_angle(&hull);
@@ -344,6 +389,11 @@ pub(crate) fn heuristic_candidates(
         let ma = mbr_angle(&hull);
         if !all_angles.iter().any(|&a| (a - ma).abs() < 2.0) {
             all_angles.push(ma);
+        }
+        if let Some(sa) = sdf_angle {
+            if !all_angles.iter().any(|&a| (a - sa).abs() < 2.0) {
+                all_angles.push(sa);
+            }
         }
     }
 
@@ -418,4 +468,3 @@ pub(crate) fn heuristic_candidates(
 
     kept
 }
-
