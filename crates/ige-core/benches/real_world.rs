@@ -1,7 +1,7 @@
-//! Real-world data benchmarks for IGE
+//! Benchmarks using real-world GIS polygon data
 //!
-//! Run with: cargo bench --package ige-core --test real_world_benches
-//! Or: cargo bench --package ige-core -- real_world
+//! Run: `cargo bench --package ige-core --test real_world`
+//! Run all: `cargo bench --package ige-core`
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use geo::Area;
@@ -47,8 +47,8 @@ fn parse_polygon(geom: &Value) -> Option<Polygon<f64>> {
 }
 
 pub fn load_real_world_polygons() -> Vec<Polygon<f64>> {
-    let content = include_str!("../tests/real_world_data/realworld.geojson");
-    let json: Value = serde_json::from_str(content).expect("Failed to parse realworld.geojson");
+    let content = include_str!("../tests/real_world_data/realworld_290.geojson");
+    let json: Value = serde_json::from_str(content).expect("Failed to parse realworld_290.geojson");
 
     let features = json.get("features").expect("No features");
     let arr = features.as_array().expect("Features is not array");

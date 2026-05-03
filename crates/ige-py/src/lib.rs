@@ -1,6 +1,6 @@
-use ige_core::bcrs::{solve_bcrs, BcrsOptions};
+use ige_core::solvers::lir::approximate::{solve_lir_approximate_oriented, LirApproxOrientedOptions};
 use ige_core::{solve_axis_aligned, AxisAlignedOptions, Rectangle, rotate_polygon};
-use ige_core::mic::{maximum_inscribed_circle, MicEngine, MicOptions, MicUsedEngine, RobustMode};
+use ige_core::solvers::mic::{maximum_inscribed_circle, MicEngine, MicOptions, MicUsedEngine, RobustMode};
 use geo::BoundingRect;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -45,7 +45,7 @@ pub fn solve_oriented_lir_py(
         polygon.clone()
     };
 
-    let result = solve_bcrs(&working_polygon, &BcrsOptions::default())
+    let result = solve_lir_approximate_oriented(&working_polygon, &LirApproxOrientedOptions::default())
         .map_err(|e| PyValueError::new_err(format!("solve failed: {e}")))?;
     let mut rect_poly = result
         .rect_polygon
@@ -146,11 +146,11 @@ fn axis_aligned_demo() -> PyResult<String> {
     ))
 }
 
-// ─── BCRS solver (oriented, with parallel option) ─────────────────────────
+// ─── LIR Approximate Oriented solver ───────────────────────────────────────
 
 #[pyclass]
 #[derive(Clone)]
-pub struct PyBcrsResult {
+pub struct PyLirApproxOrientedResult {
     #[pyo3(get)]
     pub x_min: f64,
     #[pyo3(get)]
@@ -166,11 +166,11 @@ pub struct PyBcrsResult {
 }
 
 #[pyfunction(signature = (exterior, max_aspect_ratio=None, use_parallel_field=false))]
-pub fn solve_bcrs_py(
+pub fn solve_lir_approximate_oriented_py(
     exterior: Vec<(f64, f64)>,
     max_aspect_ratio: Option<f64>,
     use_parallel_field: bool,
-) -> PyResult<PyBcrsResult> {
+) -> PyResult<PyLirApproxOrientedResult> {
     if exterior.len() < 3 {
         return Err(PyValueError::new_err("polygon exterior must contain at least 3 points"));
     }
@@ -182,20 +182,20 @@ pub fn solve_bcrs_py(
     let exterior_ls = LineString::from(coords);
     let polygon = Polygon::new(exterior_ls, vec![]);
 
-    let mut opts = BcrsOptions::default();
+    let mut opts = LirApproxOrientedOptions::default();
     if let Some(ratio) = max_aspect_ratio {
         opts.max_ratio = ratio;
     }
     opts.use_parallel_field = use_parallel_field;
 
-    let result = solve_bcrs(&polygon, &opts)
+    let result = solve_lir_approximate_oriented(&polygon, &opts)
         .map_err(|e| PyValueError::new_err(format!("solve failed: {e}")))?;
 
     let rect = result.rect.unwrap_or(ige_core::Rectangle {
         x_min: 0.0, y_min: 0.0, x_max: 0.0, y_max: 0.0,
     });
 
-    Ok(PyBcrsResult {
+    Ok(PyLirApproxOrientedResult {
         x_min: rect.x_min,
         y_min: rect.y_min,
         x_max: rect.x_max,
@@ -299,8 +299,8 @@ fn _native(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solve_axis_aligned_py, m)?)?;
     m.add_function(wrap_pyfunction!(axis_aligned_demo, m)?)?;
 
-    m.add_class::<PyBcrsResult>()?;
-    m.add_function(wrap_pyfunction!(solve_bcrs_py, m)?)?;
+    m.add_class::<PyLirApproxOrientedResult>()?;
+    m.add_function(wrap_pyfunction!(solve_lir_approximate_oriented_py, m)?)?;
 
     m.add_class::<PyMicResult>()?;
     m.add_function(wrap_pyfunction!(solve_mic_py, m)?)?;

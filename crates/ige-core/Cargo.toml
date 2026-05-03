@@ -12,7 +12,7 @@ name = "ige_core"
 path = "src/lib.rs"
 
 [[bench]]
-name = "lir"
+name = "lir_axis_aligned_bench"
 harness = false
 
 [[bench]]
@@ -20,7 +20,7 @@ name = "real_world"
 harness = false
 
 [[bench]]
-name = "bcrs_regression"
+name = "lir_approximate_oriented_bench"
 harness = false
 
 [[bench]]
@@ -41,6 +41,14 @@ anyhow = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
+
+[[example]]
+name = "run_all"
+path = "demos/run_all.rs"
+
+[[example]]
+name = "visualize"
+path = "demos/visualize.rs"
 
 [dev-dependencies]
 criterion = { workspace = true }

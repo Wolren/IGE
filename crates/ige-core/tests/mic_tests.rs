@@ -1,6 +1,11 @@
+//! Tests for Maximum Inscribed Circle (MIC) solver
+//!
+//! Run: `cargo test --test mic_tests`
+//! Run all: `cargo test --workspace`
+
 use geo::Contains;
 use geo_types::{Coord, LineString, MultiPolygon, Polygon};
-use ige_core::mic::{
+use ige_core::solvers::mic::{
     maximum_inscribed_circle, maximum_inscribed_circle_multipolygon, MicEngine, MicOptions,
     RobustMode,
 };

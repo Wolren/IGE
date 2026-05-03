@@ -1,6 +1,7 @@
-//! Real-world data tests for IGE
+//! Tests using real-world GIS polygon data
 //!
-//! Tests against real GIS polygon data from GeoJSON files.
+//! Run: `cargo test --test real_world_tests`
+//! Run all: `cargo test --workspace`
 
 use geo::algorithm::contains::Contains;
 use geo::Area;
@@ -47,8 +48,8 @@ fn parse_polygon(geom: &Value) -> Option<Polygon<f64>> {
 }
 
 fn load_test_polygons() -> Vec<(usize, Polygon<f64>)> {
-    let content = include_str!("real_world_data/realworld.geojson");
-    let json: Value = serde_json::from_str(content).expect("Failed to parse realworld.geojson");
+    let content = include_str!("real_world_data/realworld_290.geojson");
+    let json: Value = serde_json::from_str(content).expect("Failed to parse realworld_290.geojson");
 
     let features = json.get("features").expect("No features");
     let arr = features.as_array().expect("Features is not array");

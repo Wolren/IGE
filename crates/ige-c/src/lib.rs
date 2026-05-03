@@ -5,8 +5,8 @@
 
 use libc::{c_double, c_int, size_t};
 use ige_core::{solve_axis_aligned, AxisAlignedOptions, rotate_polygon};
-use ige_core::bcrs::{solve_bcrs, BcrsOptions};
-use ige_core::mic::{maximum_inscribed_circle, MicEngine, MicOptions, MicUsedEngine, RobustMode};
+use ige_core::solvers::lir::approximate::{solve_lir_approximate_oriented, LirApproxOrientedOptions};
+use ige_core::solvers::mic::{maximum_inscribed_circle, MicEngine, MicOptions, MicUsedEngine, RobustMode};
 use geo::BoundingRect;
 use geo_types::{Coord, LineString, Polygon};
 use std::slice;
@@ -304,11 +304,11 @@ pub unsafe extern "C" fn ige_solve(
     } else {
         polygon.clone()
     };
-    let mut bcrs_opts = BcrsOptions::default();
-    bcrs_opts.max_ratio = opts.max_aspect_ratio;
-    bcrs_opts.use_parallel_field = opts.use_parallel_field != 0;
+    let mut lir_opts = LirApproxOrientedOptions::default();
+    lir_opts.max_ratio = opts.max_aspect_ratio;
+    lir_opts.use_parallel_field = opts.use_parallel_field != 0;
 
-    let solve_result = solve_bcrs(&working_polygon, &bcrs_opts);
+    let solve_result = solve_lir_approximate_oriented(&working_polygon, &lir_opts);
     match solve_result {
         Ok(res) => {
             let mut rect_poly = match res.rect_polygon {

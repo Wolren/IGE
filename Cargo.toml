@@ -3,6 +3,7 @@ members = [
     "crates/ige-core",
     "crates/ige-c",
     "crates/ige-py",
+    "crates/ige-geo-input",
 ]
 resolver = "2"
 

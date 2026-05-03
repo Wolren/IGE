@@ -1,0 +1,133 @@
+# OpenEvolve config: evolve IGE solver source code
+#
+# Mode & target selection — set both in the first lines of the initial program:
+#
+#   // OPENEVOLVE-MODE: balanced   unbiased fill_rate / time^0.61 tradeoff (default)
+#   // OPENEVOLVE-MODE: accuracy   maximise fill only, ignore speed
+#   // OPENEVOLVE-MODE: speed      maximise fill-per-ms (speed biased)
+#   // OPENEVOLVE-MODE: tune       constants only, same fitness as accuracy
+#
+#   // OPENEVOLVE-TARGET: bcrs/parallel.rs              (default)
+#   // OPENEVOLVE-TARGET: bcrs/candidates.rs
+#   // OPENEVOLVE-TARGET: bcrs/expand.rs
+#   // OPENEVOLVE-TARGET: bcrs/fast.rs
+#   // OPENEVOLVE-TARGET: bcrs/prepare.rs
+#   // OPENEVOLVE-TARGET: axis_aligned/vertex_grid.rs
+#   // OPENEVOLVE-TARGET: axis_aligned/histogram.rs
+#   // OPENEVOLVE-TARGET: axis_aligned/bcrs_grid.rs
+#   // OPENEVOLVE-TARGET: axis_aligned/sdf.rs
+#   // OPENEVOLVE-TARGET: axis_aligned/containment.rs
+#   // OPENEVOLVE-TARGET: tuning.rs                     all solvers (bench: parallel)
+#   // OPENEVOLVE-TARGET: tuning_bcrs.rs                BCRS-only (bench: parallel)
+#   // OPENEVOLVE-TARGET: tuning_axis_aligned.rs         AA-only (bench: baseline)
+#
+# ── API key ────────────────────────────────────────────────────────────────
+#
+#   FREE — MiniMax M2.5 Free (via OpenCode Zen):
+#     1. Sign in at https://opencode.ai/auth, get your API key
+#     2. $env:OPENAI_API_KEY = 'oc_zen_...'
+#     3. python examples/openevolve_ige/run_ige_evolution.py
+#
+#   FREE — Google Gemini (gemini-3-flash):
+#     $env:OPENAI_API_KEY = 'AIza...'
+#     $env:OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
+#     then change model in config.yaml to: model: "gemini-3-flash"
+#
+#   PAID — OpenAI:
+#     $env:OPENAI_API_KEY = 'sk-...'
+#
+#   LOCAL — Ollama:
+#     $env:OPENAI_API_KEY = 'ollama'
+#     $env:OPENAI_BASE_URL = 'http://localhost:11434/v1'
+
+max_iterations: 100
+max_code_length: 50000
+checkpoint_interval: 5
+random_seed: 207
+file_suffix: ".rs"
+
+llm:
+  models:
+    - name: "minimax-m2.5-free"
+  api_base: "https://opencode.ai/zen/v1"
+  temperature: 0.6
+
+evaluator:
+  module: "evaluator"
+  enable_artifacts: true
+
+database:
+  population_size: 20
+  num_islands: 3
+  migration_interval: 5
+  migration_rate: 0.2
+  elite_selection_ratio: 0.15
+  exploration_ratio: 0.25
+  exploitation_ratio: 0.75
+  feature_dimensions: ["combined_score", "complexity"]
+
+prompt:
+  system_message: |
+    You are an expert computational geometry engineer writing Rust.
+    Your task is to evolve the solver module.
+
+    ## Objective
+    The evaluator returns metrics including "mode" and "combined_score".
+    The active mode determines what you should optimise:
+
+      MODE "accuracy":
+        Maximise fill_rate ONLY. Speed is irrelevant.  You may add extra
+        passes, double resolutions, brute-force — anything that raises
+        fill_rate.  Correctness is mandatory.
+
+      MODE "balanced" (default):
+        Maximise fill_rate / avg_time_ms^0.61.  A 2× slowdown needs
+        ~0.10 fill-rate gain to be worthwhile; a 10× slowdown for 0.1%
+        fill gain is rejected.  You need Pareto-improving changes:
+        restructure loops, add early-exits, parallelise smarter.
+
+      MODE "speed":
+        Maximise fill_rate / avg_time_ms (linear penalty).  Aggressively
+        optimise for throughput.  Remove redundant work, fuse passes,
+        reduce allocations, add SIMD-friendly batching.
+
+      MODE "tune":
+        Only change numerical constants in the target file.  The evaluation
+        artifacts tell you which target is active:
+
+          target = "tuning_bcrs.rs"        -> modify BCRS constants only
+          target = "tuning_axis_aligned.rs" -> modify AA constants only
+          target = "tuning.rs"             -> any section is fair game
+
+        No algorithm restructure allowed — constants only.
+
+    ## COMPILATION ERRORS
+    If the previous iteration's artifacts included a "stderr" field with
+    compiler errors, read it CAREFULLY and fix the reported issues in
+    your next mutation.  Common mistakes that cause compilation failures:
+      * Missing closing braces or parentheses
+      * Wrong method names (e.g. `log1p()` instead of `ln_1p()`)
+      * Type mismatches (e.g. `&isize` vs `&usize`)
+      * Unused variables (prefix with `_`)
+    If you keep seeing compilation errors, make SMALLER changes.
+
+    Concrete ideas to get inspired by (but also create and try your own):
+      * Quadratic interpolation for sub-bin angle accuracy improvements
+      * Sort angles by upper-bound area descending, then early-exit when coarse area < best x 0.85
+      * Replace golden-section Brent polish with ray scan
+      * Pre-filter angles: compute upper-bound for ALL 1deg steps, keep top-3 before coarse eval
+      * Parallelise the fine-solve across top-k candidates (Rayon, already partially done)
+      * Chunk the par_iter_mut() mask builder by cache lines (e.g. 64 cells per chunk)
+      * Interleave coarse sweep: first pass at 16x16, second at 64x64 around top-3 angles
+      * Sliding-window histogram: avoid full recompute per row -- update only changed columns
+      * Adaptive binary-search: 48 iterations for wide rects, 16 for narrow (bounding-box ratio)
+      * Batch contains(): collect cell centres into Vec<(f64,f64)>, process with par_iter()
+      * Pre-compute vertex-edge bounding-box intersection for faster per-cell classification
+      * Add angle dedup after filtering: if two angles have same upper-bound area, keep one
+      * Process rows in parallel: split mask into horizontal strips, each par_iter() chunk
+
+    ## ALL SOLVER ENTRY POINT -- DO NOT CHANGE
+    The public API must remain:
+      pub fn solve_bcrs_parallel(poly: &Polygon<f64>, options: &BcrsOptions) -> Result<BcrsResult>
+
+    Return ONLY valid Rust source code for the entire module.  No explanations.

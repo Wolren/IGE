@@ -1,19 +1,19 @@
 //! Inscribed Geometry Engine (IGE) - Largest Inscribed Rectangle algorithms
 
 pub mod algorithms;
-pub mod axis_aligned;
 pub mod cpu;
 pub mod geometry;
-pub mod mic;
 pub mod shared;
 pub mod tuning;
 
+pub mod solvers;
+
 #[cfg(feature = "gpu")]
 pub mod gpu;
-pub mod bcrs;
 
-pub use cpu::{solve_bcrs_parallel, solve_oriented_lir, solve_axis_aligned, AxisAlignedOptions, Rectangle, SolverOptions, detect_polygon_type, rotate_polygon};
-pub use mic::{
+pub use cpu::{solve_lir_approximate_oriented_parallel, solve_oriented_lir, solve_axis_aligned, AxisAlignedOptions, Rectangle, SolverOptions, detect_polygon_type, rotate_polygon};
+pub use solvers::lir::approximate::{solve_lir_approximate_oriented, LirApproxOrientedOptions, LirApproxOrientedResult};
+pub use solvers::mic::{
     maximum_inscribed_circle,
     maximum_inscribed_circle_multipolygon,
     MicEngine,

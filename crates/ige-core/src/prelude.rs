@@ -5,7 +5,7 @@ pub use crate::algorithms::{
 };
 
 pub use crate::cpu::{solve_oriented_lir, Rectangle};
-pub use crate::mic::{
+pub use crate::solvers::mic::{
     maximum_inscribed_circle,
     maximum_inscribed_circle_multipolygon,
     MicEngine,
