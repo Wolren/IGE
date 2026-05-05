@@ -1,38 +1,32 @@
-//! LIR Approximate Oriented — Largest Inscribed Rectangle Approximate Solver with SDF-guided expansion.
+//! LIR Oriented — Largest Inscribed Rectangle Solver with free orientation (rotation).
 //!
-//! Full Rust port of `bcrs_fast_worker.py` Stages 1–7.
+//! Parallel solver that evaluates multiple candidate angles in parallel for better quality results.
 //! Optional GPU acceleration hooks are behind the `"gpu"` feature flag.
 
 pub mod candidates;
 pub mod certify;
 pub mod expand;
-pub mod fallback;
 pub mod fast;
 pub mod parallel;
-pub mod polish;
 pub mod prepare;
-pub mod refine;
 
-use geo::BoundingRect;
 use geo_types::{Point, Polygon};
 
-use crate::shared::{LirError, Rectangle, Result};
+use crate::shared::{Rectangle, Result};
 
 #[cfg(feature = "gpu")]
 use crate::gpu::GpuContext;
-pub(crate) use candidates::heuristic_candidates;
-pub(crate) use certify::certify_and_adjust;
 pub use expand::expand_rect_to_boundary;
-pub use fast::maybe_fast_path;
-pub use parallel::solve_lir_approximate_oriented_parallel;
+pub use parallel::solve_lir_oriented_parallel;
 pub use prepare::{prepare_polygon, simplify_for_solve};
-pub(crate) use refine::refine_best_candidate;
+
+pub(crate) use certify::certify_and_adjust;
 
 // ─── Public types ─────────────────────────────────────────────────────────
 
 /// Configuration for the LIR approximate oriented solver.
 #[derive(Debug, Clone)]
-pub struct LirApproxOrientedOptions {
+pub struct LirOrientedOptions {
     /// Max aspect ratio (longer/shorter side); 0.0 = unconstrained.
     pub max_ratio: f64,
     /// Coarse grid resolution used for heuristic seeding and Brent polish.
@@ -70,7 +64,7 @@ pub struct LirApproxOrientedOptions {
     pub gpu_ctx: Option<std::sync::Arc<GpuContext>>,
 }
 
-impl Default for LirApproxOrientedOptions {
+impl Default for LirOrientedOptions {
     fn default() -> Self {
         Self {
             max_ratio: 0.0,
@@ -97,7 +91,7 @@ impl Default for LirApproxOrientedOptions {
 
 /// Result of a LIR approximate oriented solve, including per-stage area gains for diagnostics.
 #[derive(Debug, Clone)]
-pub struct LirApproxOrientedResult {
+pub struct LirOrientedResult {
     /// Best inscribed rectangle in world frame (AABB — axis-aligned bounding box).
     /// For the actual oriented rectangle, use `rect_polygon`.
     pub rect: Option<Rectangle>,
@@ -118,7 +112,7 @@ pub struct LirApproxOrientedResult {
     pub s5_area: f64,
 }
 
-impl LirApproxOrientedResult {
+impl LirOrientedResult {
     pub fn empty() -> Self {
         Self {
             rect: None,
@@ -133,7 +127,7 @@ impl LirApproxOrientedResult {
     }
 }
 
-impl Default for LirApproxOrientedResult {
+impl Default for LirOrientedResult {
     fn default() -> Self {
         Self::empty()
     }
@@ -161,87 +155,9 @@ pub(crate) struct AngleCandidate {
 /// * `options` - Solver configuration
 ///
 /// # Returns
-/// A `LirApproxOrientedResult` with the best rectangle (AABB in world frame), area, angle, etc.
-pub fn solve_lir_approximate_oriented(poly: &Polygon<f64>, options: &LirApproxOrientedOptions) -> Result<LirApproxOrientedResult> {
-    // Dispatch to parallel solver when the flag is set
-    if options.use_parallel_field {
-        return parallel::solve_lir_approximate_oriented_parallel(poly, options);
-    }
-
-    // Stage 0: Geometry preparation
-    let poly = prepare_polygon(poly.clone()).ok_or(LirError::InvalidPolygon(
-        "Polygon has <3 vertices or zero area".to_string(),
-    ))?;
-
-    // Fast path: simple convex shapes
-    if let Some((rect_poly, area, angle, _)) = maybe_fast_path(&poly, options.max_ratio) {
-        let bb = rect_poly.bounding_rect().unwrap();
-        return Ok(LirApproxOrientedResult {
-            rect: Some(Rectangle {
-                x_min: bb.min().x,
-                y_min: bb.min().y,
-                x_max: bb.max().x,
-                y_max: bb.max().y,
-            }),
-            rect_polygon: Some(rect_poly),
-            area,
-            angle_deg: angle,
-            best_effort: false,
-            s2_area: area,
-            s4_area: area,
-            s5_area: area,
-        });
-    }
-
-    // Stage 1: Geometry preparation (simplification done inside)
-    let angle_step = 5usize;
-
-    // Stage 2: Heuristic candidates
-    let candidates = heuristic_candidates(
-        &poly,
-        angle_step,
-        options.grid_coarse,
-        options.max_ratio,
-        options.top_k,
-    );
-
-    if candidates.is_empty() {
-        return Err(LirError::NoRectangleFound);
-    }
-
-    let s2_area = candidates.first().map(|c| c.area).unwrap_or(0.0);
-
-    // Stages 3–7: Refine best candidate
-    let result = refine_best_candidate(
-        &poly,
-        &candidates,
-        options.grid_coarse,
-        options.grid_fine,
-        options.max_ratio,
-        options.always_return,
-    );
-
-    match result {
-        Some((rect, area, angle, _ratio, _rank, _gain, used_best_effort)) => {
-            let bb = rect.bounding_rect().unwrap();
-            Ok(LirApproxOrientedResult {
-                rect: Some(Rectangle {
-                    x_min: bb.min().x,
-                    y_min: bb.min().y,
-                    x_max: bb.max().x,
-                    y_max: bb.max().y,
-                }),
-                rect_polygon: Some(rect),
-                area,
-                angle_deg: angle,
-                best_effort: used_best_effort,
-                s2_area,
-                s4_area: area,
-                s5_area: area,
-            })
-        }
-        None => Err(LirError::NoRectangleFound),
-    }
+/// A `LirOrientedResult` with the best rectangle (AABB in world frame), area, angle, etc.
+pub fn solve_lir_oriented(poly: &Polygon<f64>, options: &LirOrientedOptions) -> Result<LirOrientedResult> {
+    parallel::solve_lir_oriented_parallel(poly, options)
 }
 
 // ─── Worker entry point (compatible with Python signature) ─────────────────
@@ -258,7 +174,7 @@ pub fn worker_process_feature(
     top_k: usize,
     always_return: bool,
 ) -> Option<(Rectangle, f64, f64, f64, usize, f64, bool)> {
-    let options = LirApproxOrientedOptions {
+    let options = LirOrientedOptions {
         max_ratio,
         grid_coarse,
         grid_fine,
@@ -279,7 +195,7 @@ pub fn worker_process_feature(
         gpu_ctx: None,
     };
 
-    let result = solve_lir_approximate_oriented(poly, &options).ok()?;
+    let result = solve_lir_oriented(poly, &options).ok()?;
 
     Some((
         result.rect?,
@@ -311,15 +227,15 @@ mod tests {
     }
 
     #[test]
-    fn lir_approximate_oriented_solve_square() {
+    fn lir_oriented_solve_square() {
         let poly = square_10x10();
-        let result = solve_lir_approximate_oriented(&poly, &LirApproxOrientedOptions::default()).unwrap();
+        let result = solve_lir_oriented(&poly, &LirOrientedOptions::default()).unwrap();
         assert!(result.area > 80.0, "area too small: {}", result.area);
         assert!(result.rect.is_some());
     }
 
     #[test]
-    fn lir_approximate_oriented_solve_rectangle() {
+    fn lir_oriented_solve_rectangle() {
         let poly = Polygon::new(
             LineString::from(vec![
                 coord! {x:0.0, y:0.0},
@@ -330,12 +246,12 @@ mod tests {
             ]),
             vec![],
         );
-        let result = solve_lir_approximate_oriented(&poly, &LirApproxOrientedOptions::default()).unwrap();
+        let result = solve_lir_oriented(&poly, &LirOrientedOptions::default()).unwrap();
         assert!((result.area - 100.0).abs() < 10.0, "area={}", result.area);
     }
 
     #[test]
-    fn lir_approximate_oriented_triangle_finds_rect() {
+    fn lir_oriented_triangle_finds_rect() {
         let poly = Polygon::new(
             LineString::from(vec![
                 coord! {x:0.0, y:0.0},
@@ -345,13 +261,13 @@ mod tests {
             ]),
             vec![],
         );
-        let result = solve_lir_approximate_oriented(&poly, &LirApproxOrientedOptions::default());
+        let result = solve_lir_oriented(&poly, &LirOrientedOptions::default());
         assert!(result.is_ok(), "LIR Approximate Oriented should find a rect in a triangle");
     }
 
     #[test]
     fn empty_result() {
-        let result = LirApproxOrientedResult::empty();
+        let result = LirOrientedResult::empty();
         assert!(result.rect.is_none());
         assert_eq!(result.area, 0.0);
     }

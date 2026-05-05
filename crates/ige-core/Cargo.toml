@@ -20,7 +20,7 @@ name = "real_world"
 harness = false
 
 [[bench]]
-name = "lir_approximate_oriented_bench"
+name = "lir_oriented_bench"
 harness = false
 
 [[bench]]

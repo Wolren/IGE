@@ -7,19 +7,20 @@
 #   // OPENEVOLVE-MODE: speed      maximise fill-per-ms (speed biased)
 #   // OPENEVOLVE-MODE: tune       constants only, same fitness as accuracy
 #
-#   // OPENEVOLVE-TARGET: bcrs/parallel.rs              (default)
-#   // OPENEVOLVE-TARGET: bcrs/candidates.rs
-#   // OPENEVOLVE-TARGET: bcrs/expand.rs
-#   // OPENEVOLVE-TARGET: bcrs/fast.rs
-#   // OPENEVOLVE-TARGET: bcrs/prepare.rs
-#   // OPENEVOLVE-TARGET: axis_aligned/vertex_grid.rs
-#   // OPENEVOLVE-TARGET: axis_aligned/histogram.rs
-#   // OPENEVOLVE-TARGET: axis_aligned/bcrs_grid.rs
-#   // OPENEVOLVE-TARGET: axis_aligned/sdf.rs
-#   // OPENEVOLVE-TARGET: axis_aligned/containment.rs
-#   // OPENEVOLVE-TARGET: tuning.rs                     all solvers (bench: parallel)
-#   // OPENEVOLVE-TARGET: tuning_bcrs.rs                BCRS-only (bench: parallel)
-#   // OPENEVOLVE-TARGET: tuning_axis_aligned.rs         AA-only (bench: baseline)
+#   // OPENEVOLVE-TARGET: lir_oriented/parallel.rs      (default)
+#   // OPENEVOLVE-TARGET: lir_oriented/candidates.rs
+#   // OPENEVOLVE-TARGET: lir_oriented/expand.rs
+#   // OPENEVOLVE-TARGET: lir_oriented/fast.rs
+#   // OPENEVOLVE-TARGET: lir_oriented/prepare.rs
+#   // OPENEVOLVE-TARGET: lir_oriented/certify.rs
+#   // OPENEVOLVE-TARGET: lir_axis_aligned/vertex_grid.rs
+#   // OPENEVOLVE-TARGET: lir_axis_aligned/histogram.rs
+#   // OPENEVOLVE-TARGET: lir_axis_aligned/grid.rs
+#   // OPENEVOLVE-TARGET: lir_axis_aligned/sdf.rs
+#   // OPENEVOLVE-TARGET: lir_axis_aligned/containment.rs
+#   // OPENEVOLVE-TARGET: lir_axis_aligned/exact.rs
+#   // OPENEVOLVE-TARGET: tuning_lir_oriented.rs      (bench: parallel)
+#   // OPENEVOLVE-TARGET: tuning_lir_axis_aligned.rs      (bench: baseline)
 #
 # ── API key ────────────────────────────────────────────────────────────────
 #

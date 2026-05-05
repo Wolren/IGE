@@ -1,4 +1,4 @@
-// BCRS Batch Grid Scorer — one dispatch processes all polygons in parallel.
+// LIR Batch Grid Scorer — one dispatch processes all polygons in parallel.
 //
 // Each workgroup: (gid.x, gid.y) = grid cell position, gid.z = polygon index.
 // Replaces per-polygon GPU dispatch with single batch dispatch.

@@ -71,21 +71,21 @@ pub fn get_polygon_stats() -> (usize, f64, f64) {
 fn benchmark_real_world_single(c: &mut Criterion) {
     let polygons = load_real_world_polygons();
     let mut group = c.benchmark_group("real_world_single");
-    
+
     for (i, poly) in polygons.iter().enumerate().take(20) {
         let name = format!("polygon_{}", i + 1);
         group.bench_function(&name, |b| {
             b.iter(|| solve_oriented_lir(poly));
         });
     }
-    
+
     group.finish();
 }
 
 fn benchmark_real_world_batch(c: &mut Criterion) {
     let polygons = load_real_world_polygons();
     let mut group = c.benchmark_group("real_world_batch");
-    
+
     let sizes = [10, 50, 100, 290];
     for size in sizes {
         let name = format!("{} polygons", size);
@@ -97,7 +97,7 @@ fn benchmark_real_world_batch(c: &mut Criterion) {
             });
         });
     }
-    
+
     group.finish();
 }
 

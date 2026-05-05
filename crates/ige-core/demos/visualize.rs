@@ -1,4 +1,4 @@
-//! IGE Visual Preview Tool — LIR Approximate Oriented + baseline comparison.
+//! IGE Visual Preview Tool — LIR Oriented + baseline comparison.
 //!
 //! Output: `target/ige_output/index.html`
 //!
@@ -10,7 +10,7 @@
 
 use geo::Area;
 use geo_types::{Coord, LineString, Polygon};
-use ige_core::solvers::lir::approximate::{solve_lir_approximate_oriented, LirApproxOrientedOptions};
+use ige_core::solvers::lir::oriented::{solve_lir_oriented, LirOrientedOptions};
 use ige_core::solvers::mic::{maximum_inscribed_circle, MicEngine, MicOptions, MicResult, RobustMode};
 use ige_core::{solve_axis_aligned, AxisAlignedOptions};
 use rayon::prelude::*;
@@ -635,14 +635,14 @@ svg{{width:100%;height:220px;background:#0f0f23;border-radius:4px}}
             let poly_area = poly.unsigned_area();
 
             let (rp, ra, ang, be) = if use_parallel {
-                let mut opts = LirApproxOrientedOptions::default();
+                let mut opts = LirOrientedOptions::default();
                 opts.use_parallel_field = true;
-                match solve_lir_approximate_oriented(poly, &opts) {
+                match solve_lir_oriented(poly, &opts) {
                     Ok(r) => (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
                     Err(_) => (None, 0.0, 0.0, false),
                 }
             } else if use_approx_oriented {
-                match solve_lir_approximate_oriented(poly, &LirApproxOrientedOptions::default()) {
+                match solve_lir_oriented(poly, &LirOrientedOptions::default()) {
                     Ok(r) => (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
                     Err(_) => (None, 0.0, 0.0, false),
                 }

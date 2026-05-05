@@ -1,11 +1,11 @@
-//! Tests for LIR Approximate Oriented solver
+//! Tests for LIR Oriented solver
 //!
-//! Run: `cargo test --test lir_approximate_oriented_tests`
+//! Run: `cargo test --test lir_oriented_tests`
 //! Run all: `cargo test --workspace`
 
 use geo::Area;
 use geo_types::{coord, LineString, Polygon};
-use ige_core::solvers::lir::approximate::{solve_lir_approximate_oriented, LirApproxOrientedOptions};
+use ige_core::solvers::lir::oriented::{solve_lir_oriented, LirOrientedOptions};
 
 fn main() {
     let poly = Polygon::new(
@@ -19,14 +19,14 @@ fn main() {
         vec![],
     );
 
-    let std_opts = LirApproxOrientedOptions::default();
-    let par_opts = LirApproxOrientedOptions {
+    let std_opts = LirOrientedOptions::default();
+    let par_opts = LirOrientedOptions {
         use_parallel_field: true,
         ..Default::default()
     };
 
-    let std_res = solve_lir_approximate_oriented(&poly, &std_opts).expect("standard lir approx oriented solve failed");
-    let par_res = solve_lir_approximate_oriented(&poly, &par_opts).expect("parallel lir approx oriented solve failed");
+    let std_res = solve_lir_oriented(&poly, &std_opts).expect("standard lir approx oriented solve failed");
+    let par_res = solve_lir_oriented(&poly, &par_opts).expect("parallel lir approx oriented solve failed");
 
     println!("Standard: area={}", std_res.area);
     println!("Parallel: area={}", par_res.area);
@@ -111,14 +111,14 @@ fn parallel_quality_on_representative_shapes() {
 }
 
 fn compare_parallel_quality(poly: &Polygon<f64>, min_ratio: f64) {
-    let std_opts = LirApproxOrientedOptions::default();
-    let par_opts = LirApproxOrientedOptions {
+    let std_opts = LirOrientedOptions::default();
+    let par_opts = LirOrientedOptions {
         use_parallel_field: true,
         ..Default::default()
     };
 
-    let std_res = solve_lir_approximate_oriented(poly, &std_opts).expect("standard solve failed");
-    let par_res = solve_lir_approximate_oriented(poly, &par_opts).expect("parallel solve failed");
+    let std_res = solve_lir_oriented(poly, &std_opts).expect("standard solve failed");
+    let par_res = solve_lir_oriented(poly, &par_opts).expect("parallel solve failed");
 
     let ratio = std_res.area.min(par_res.area) / std_res.area.max(1e-10);
     assert!(ratio >= min_ratio, "parallel quality too low: {} < {}", ratio, min_ratio);

@@ -11,8 +11,8 @@ Modes (parsed from a ``// OPENEVOLVE-MODE: ...`` comment in the candidate):
 
 Target (parsed from ``// OPENEVOLVE-TARGET: ...``):
 
-  ``bcrs/parallel.rs``             — parallel ray-shooting field solver
-  ``axis_aligned/vertex_grid.rs``  — exact vertex-grid axis-aligned solver
+  ``lir_oriented/parallel.rs``  — parallel oriented LIR solver
+  ``lir_axis_aligned/vertex_grid.rs`` — exact vertex-grid axis-aligned solver
 
 API: set OPENAI_API_KEY + optionally OPENAI_BASE_URL for any OpenAI-compatible
 provider (OpenAI, Google Gemini, Ollama, vLLM, …).
@@ -32,81 +32,72 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BACKUP_DIR = REPO_ROOT / "examples" / "openevolve_ige"
 
 TARGETS = {
-    "bcrs/parallel.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "parallel.rs",
+    # LIR Oriented solvers
+    "lir_oriented/parallel.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "oriented" / "parallel.rs",
         "benchmark_flag": "--parallel",
     },
-    "bcrs/candidates.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "candidates.rs",
+    "lir_oriented/candidates.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "oriented" / "candidates.rs",
         "benchmark_flag": "--parallel",
     },
-    "bcrs/certify.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "certify.rs",
+    "lir_oriented/certify.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "oriented" / "certify.rs",
         "benchmark_flag": "--parallel",
     },
-    "bcrs/expand.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "expand.rs",
+    "lir_oriented/expand.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "oriented" / "expand.rs",
         "benchmark_flag": "--parallel",
     },
-    "bcrs/fallback.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "fallback.rs",
+    "lir_oriented/fast.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "oriented" / "fast.rs",
         "benchmark_flag": "--parallel",
     },
-    "bcrs/fast.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "fast.rs",
+    "lir_oriented/prepare.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "oriented" / "prepare.rs",
         "benchmark_flag": "--parallel",
     },
-    "bcrs/prepare.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "prepare.rs",
-        "benchmark_flag": "--parallel",
-    },
-    "bcrs/polish.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "polish.rs",
-        "benchmark_flag": "--parallel",
-    },
-    "bcrs/refine.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "bcrs" / "refine.rs",
-        "benchmark_flag": "--parallel",
-    },
-    "axis_aligned/vertex_grid.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "axis_aligned" / "vertex_grid.rs",
+    # LIR Axis-Aligned solvers
+    "lir_axis_aligned/vertex_grid.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "axis_aligned" / "vertex_grid.rs",
         "benchmark_flag": "--baseline",
     },
-    "axis_aligned/histogram.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "axis_aligned" / "histogram.rs",
+    "lir_axis_aligned/histogram.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "axis_aligned" / "histogram.rs",
         "benchmark_flag": "--baseline",
     },
-    "axis_aligned/bcrs_grid.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "axis_aligned" / "bcrs_grid.rs",
+    "lir_axis_aligned/grid.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "axis_aligned" / "grid.rs",
         "benchmark_flag": "--baseline",
     },
-    "axis_aligned/sdf.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "axis_aligned" / "sdf.rs",
+    "lir_axis_aligned/sdf.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "axis_aligned" / "sdf.rs",
         "benchmark_flag": "--baseline",
     },
-    "axis_aligned/containment.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "axis_aligned" / "containment.rs",
+    "lir_axis_aligned/containment.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "axis_aligned" / "containment.rs",
         "benchmark_flag": "--baseline",
     },
+    "lir_axis_aligned/exact.rs": {
+        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "solvers" / "lir" / "axis_aligned" / "exact.rs",
+        "benchmark_flag": "--baseline",
+    },
+    # Tuning
     "tuning.rs": {
         "module": REPO_ROOT / "crates" / "ige-core" / "src" / "tuning.rs",
         "benchmark_flag": "--parallel",
     },
-    "tuning_bcrs.rs": {
+    "tuning_lir_oriented.rs": {
         "module": REPO_ROOT / "crates" / "ige-core" / "src" / "tuning.rs",
         "benchmark_flag": "--parallel",
     },
-    "tuning_axis_aligned.rs": {
+    "tuning_lir_axis_aligned.rs": {
         "module": REPO_ROOT / "crates" / "ige-core" / "src" / "tuning.rs",
-        "benchmark_flag": "--baseline",
-    },
-    "axis_aligned/containment.rs": {
-        "module": REPO_ROOT / "crates" / "ige-core" / "src" / "axis_aligned" / "containment.rs",
         "benchmark_flag": "--baseline",
     },
 }
 
-DEFAULT_TARGET = "bcrs/parallel.rs"
+DEFAULT_TARGET = "lir_oriented/parallel.rs"
 DEFAULT_MODE = "balanced"
 
 MODES = {

@@ -1,11 +1,13 @@
-//! Benchmarks for LIR Approximate Oriented solver
+//! Benchmarks for LIR Oriented solver
 //!
-//! Run: `cargo bench --package ige-core --test lir_approximate_oriented_bench`
+//! Run: `cargo bench --package ige-core --test lir_oriented_bench`
 //! Run all: `cargo bench --package ige-core`
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use geo_types::{coord, LineString, Polygon};
-use ige_core::solvers::lir::approximate::{solve_lir_approximate_oriented, LirApproxOrientedOptions};
+use ige_core::solvers::lir::oriented::{
+    solve_lir_oriented, LirOrientedOptions,
+};
 
 fn test_shapes() -> Vec<Polygon<f64>> {
     vec![
@@ -45,33 +47,37 @@ fn test_shapes() -> Vec<Polygon<f64>> {
     ]
 }
 
-fn benchmark_lir_approx_oriented_standard(c: &mut Criterion) {
+fn benchmark_lir_oriented_standard(c: &mut Criterion) {
     let shapes = test_shapes();
-    let mut opts = LirApproxOrientedOptions::default();
+    let mut opts = LirOrientedOptions::default();
     opts.use_parallel_field = false;
 
-    c.bench_function("lir_approximate_oriented_standard_batch", |b| {
+    c.bench_function("lir_oriented_standard_batch", |b| {
         b.iter(|| {
             for poly in &shapes {
-                let _ = solve_lir_approximate_oriented(poly, &opts);
+                let _ = solve_lir_oriented(poly, &opts);
             }
         });
     });
 }
 
-fn benchmark_lir_approximate_oriented_parallel(c: &mut Criterion) {
+fn benchmark_lir_oriented_parallel(c: &mut Criterion) {
     let shapes = test_shapes();
-    let mut opts = LirApproxOrientedOptions::default();
+    let mut opts = LirOrientedOptions::default();
     opts.use_parallel_field = true;
 
-    c.bench_function("lir_approximate_oriented_parallel_batch", |b| {
+    c.bench_function("lir_oriented_parallel_batch", |b| {
         b.iter(|| {
             for poly in &shapes {
-                let _ = solve_lir_approximate_oriented(poly, &opts);
+                let _ = solve_lir_oriented(poly, &opts);
             }
         });
     });
 }
 
-criterion_group!(benches, benchmark_lir_approx_oriented_standard, benchmark_lir_approximate_oriented_parallel);
+criterion_group!(
+    benches,
+    benchmark_lir_oriented_standard,
+    benchmark_lir_oriented_parallel
+);
 criterion_main!(benches);

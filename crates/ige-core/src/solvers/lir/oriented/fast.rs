@@ -9,7 +9,7 @@ use geo_types::{Coord, Point, Polygon};
 
 use super::expand::expand_rect_to_boundary;
 use super::super::axis_aligned::solve_axis_rect_grid;
-use crate::geometry::rotate_polygon;
+use crate::shared::rotate_polygon;
 
 /// Try the convex fast path. Returns `(certified_polygon, area, angle_deg, ratio)` or `None`.
 pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64) -> Option<(Polygon<f64>, f64, f64, f64)> {

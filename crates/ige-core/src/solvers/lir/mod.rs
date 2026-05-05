@@ -1,2 +1,2 @@
 pub mod axis_aligned;
-pub mod approximate;
+pub mod oriented;

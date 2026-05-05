@@ -1,4 +1,4 @@
-// BCRS SDF compute shader — GPU-accelerated signed-distance-field evaluation.
+// LIR SDF compute shader — GPU-accelerated signed-distance-field evaluation.
 //
 // Evaluates the signed distance from each candidate rectangle's sampling points
 // (4 corners + 4 edge midpoints) to the polygon boundary.

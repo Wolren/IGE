@@ -146,11 +146,15 @@ fn compute_row_intervals(poly: &Polygon<f64>, xs: &[f64], ys: &[f64]) -> Vec<Vec
 #[derive(Debug, Clone)]
 pub struct AxisAlignedOptions {
     pub max_ratio: f64,
+    pub max_grid: usize,
 }
 
 impl Default for AxisAlignedOptions {
     fn default() -> Self {
-        Self { max_ratio: 0.0 }
+        Self {
+            max_ratio: 0.0,
+            max_grid: crate::tuning::GRID_COARSE,
+        }
     }
 }
 
@@ -201,7 +205,7 @@ pub fn solve_vertex_grid(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> O
     // Adaptive sub-division: more levels for low vertex-count polygons to ensure
     // sufficient grid resolution for the LRIH to find the optimal rectangle.
     let n_unique = xs.len().min(ys.len());
-    let levels = if n_unique <= 4 { crate::tuning::AA_SUBDIV_LEVELS_HIGH } else if n_unique <= crate::tuning::AA_SMALL_VERTEX_CUTOFF { crate::tuning::AA_SUBDIV_LEVELS_MED } else { crate::tuning::AA_SUBDIV_LEVELS_LOW };
+    let levels = if n_unique <= 4 { crate::tuning::AA_SUBDIV_LEVELS_HIGH as u32 } else if n_unique <= crate::tuning::AA_SMALL_VERTEX_CUTOFF { crate::tuning::AA_SUBDIV_LEVELS_MED as u32 } else { crate::tuning::AA_SUBDIV_LEVELS_LOW as u32 };
 
     xs = subdivide_coords(&xs, levels);
     ys = subdivide_coords(&ys, levels);

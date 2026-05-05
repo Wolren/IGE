@@ -30,23 +30,42 @@ fn pentagon() -> Polygon<f64> {
 
 fn concave_l_shape() -> Polygon<f64> {
     make_polygon(&[
-        (0.0, 0.0), (4.0, 0.0), (4.0, 1.0),
-        (2.0, 1.0), (2.0, 3.0), (4.0, 3.0), (4.0, 4.0), (0.0, 4.0)
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 1.0),
+        (2.0, 1.0),
+        (2.0, 3.0),
+        (4.0, 3.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
     ])
 }
 
 fn concave_u_shape() -> Polygon<f64> {
     make_polygon(&[
-        (0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (3.0, 4.0),
-        (3.0, 1.0), (1.0, 1.0), (1.0, 4.0), (0.0, 4.0)
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 4.0),
+        (3.0, 4.0),
+        (3.0, 1.0),
+        (1.0, 1.0),
+        (1.0, 4.0),
+        (0.0, 4.0),
     ])
 }
 
 fn zigzag() -> Polygon<f64> {
     make_polygon(&[
-        (0.0, 0.0), (1.0, 0.5), (2.0, 0.0), (3.0, 0.5),
-        (4.0, 0.0), (4.0, 1.0), (3.0, 1.5), (2.0, 1.0),
-        (1.0, 1.5), (0.0, 1.0)
+        (0.0, 0.0),
+        (1.0, 0.5),
+        (2.0, 0.0),
+        (3.0, 0.5),
+        (4.0, 0.0),
+        (4.0, 1.0),
+        (3.0, 1.5),
+        (2.0, 1.0),
+        (1.0, 1.5),
+        (0.0, 1.0),
     ])
 }
 
@@ -63,55 +82,55 @@ fn regular_polygon(n: usize, radius: f64) -> Polygon<f64> {
 
 fn benchmark_basic_shapes(c: &mut Criterion) {
     let mut group = c.benchmark_group("basic_shapes");
-    
+
     group.bench_function("unit_square_1x1", |b| {
         let poly = unit_square();
         b.iter(|| solve_oriented_lir(&poly));
     });
-    
+
     group.bench_function("rectangle_10x1", |b| {
         let poly = rectangle_10x1();
         b.iter(|| solve_oriented_lir(&poly));
     });
-    
+
     group.bench_function("triangle", |b| {
         let poly = triangle();
         b.iter(|| solve_oriented_lir(&poly));
     });
-    
+
     group.bench_function("pentagon", |b| {
         let poly = pentagon();
         b.iter(|| solve_oriented_lir(&poly));
     });
-    
+
     group.finish();
 }
 
 fn benchmark_concave_polygons(c: &mut Criterion) {
     let mut group = c.benchmark_group("concave_polygons");
-    
+
     group.bench_function("l_shape", |b| {
         let poly = concave_l_shape();
         b.iter(|| solve_oriented_lir(&poly));
     });
-    
+
     group.bench_function("u_shape", |b| {
         let poly = concave_u_shape();
         b.iter(|| solve_oriented_lir(&poly));
     });
-    
+
     group.bench_function("zigzag", |b| {
         let poly = zigzag();
         b.iter(|| solve_oriented_lir(&poly));
     });
-    
+
     group.finish();
 }
 
 fn benchmark_rotation(c: &mut Criterion) {
     let mut group = c.benchmark_group("rotation");
     let poly = pentagon();
-    
+
     for angle in [0.0, 15.0, 30.0, 45.0, 60.0, 90.0] {
         let _name = format!("{:.0}deg", angle);
         group.bench_function(&_name, |b| {
@@ -122,16 +141,20 @@ fn benchmark_rotation(c: &mut Criterion) {
             b.iter(|| solve_oriented_lir(&poly));
         });
     }
-    
+
     group.finish();
 }
 
 fn benchmark_aspect_ratio(c: &mut Criterion) {
     let mut group = c.benchmark_group("aspect_ratio");
     let poly = pentagon();
-    
+
     for ratio in [0.0, 1.0, 2.0, 5.0, 10.0] {
-        let _name = if ratio == 0.0 { "unlimited".to_string() } else { format!("{:.0}:1", ratio) };
+        let _name = if ratio == 0.0 {
+            "unlimited".to_string()
+        } else {
+            format!("{:.0}:1", ratio)
+        };
         group.bench_function(&_name, |b| {
             let _opts = SolverOptions {
                 max_aspect_ratio: ratio,
@@ -140,14 +163,14 @@ fn benchmark_aspect_ratio(c: &mut Criterion) {
             b.iter(|| solve_oriented_lir(&poly));
         });
     }
-    
+
     group.finish();
 }
 
 fn benchmark_polygon_sizes(c: &mut Criterion) {
     let mut group = c.benchmark_group("polygon_sizes");
     let radius = 10.0;
-    
+
     for n in [4, 6, 8, 10, 20] {
         let name = format!("{} vertices", n);
         group.bench_function(&name, |b| {
@@ -155,7 +178,7 @@ fn benchmark_polygon_sizes(c: &mut Criterion) {
             b.iter(|| solve_oriented_lir(&poly));
         });
     }
-    
+
     group.finish();
 }
 

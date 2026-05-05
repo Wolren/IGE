@@ -9,49 +9,117 @@ use ige_core::solvers::mic::{maximum_inscribed_circle, MicEngine, MicOptions, Ro
 
 fn make_polygon(exterior: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon<f64> {
     let ext = LineString::from(
-        exterior.iter()
+        exterior
+            .iter()
             .map(|(x, y)| Coord { x: *x, y: *y })
             .collect::<Vec<_>>(),
     );
-    let interiors = holes.iter()
-        .map(|ring| LineString::from(
-            ring.iter().map(|(x, y)| Coord { x: *x, y: *y }).collect::<Vec<_>>(),
-        ))
+    let interiors = holes
+        .iter()
+        .map(|ring| {
+            LineString::from(
+                ring.iter()
+                    .map(|(x, y)| Coord { x: *x, y: *y })
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
     Polygon::new(ext, interiors)
 }
 
 fn fixtures() -> Vec<(&'static str, Polygon<f64>)> {
     vec![
-        ("20x20 square",
-            make_polygon(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)], &[])),
-        ("C-shape concave",
-            make_polygon(&[
-                (0.0, 0.0), (14.0, 0.0), (14.0, 12.0), (9.0, 12.0),
-                (9.0, 4.0), (5.0, 4.0), (5.0, 12.0), (0.0, 12.0), (0.0, 0.0),
-            ], &[])),
-        ("rect with hole",
-            make_polygon(&[(0.0, 0.0), (30.0, 0.0), (30.0, 22.0), (0.0, 22.0), (0.0, 0.0)],
-                &[&[(9.0, 7.0), (21.0, 7.0), (21.0, 15.0), (9.0, 15.0), (9.0, 7.0)]])),
-        ("40x4 thin rect",
-            make_polygon(&[(0.0, 0.0), (40.0, 0.0), (40.0, 4.0), (0.0, 4.0), (0.0, 0.0)], &[])),
-        ("regular hexagon",
-            make_polygon(&[
-                (10.0, 0.0), (5.0, 8.66), (-5.0, 8.66), (-10.0, 0.0),
-                (-5.0, -8.66), (5.0, -8.66), (10.0, 0.0),
-            ], &[])),
-        ("right triangle",
-            make_polygon(&[(0.0, 0.0), (12.0, 0.0), (0.0, 9.0), (0.0, 0.0)], &[])),
+        (
+            "20x20 square",
+            make_polygon(
+                &[
+                    (0.0, 0.0),
+                    (20.0, 0.0),
+                    (20.0, 20.0),
+                    (0.0, 20.0),
+                    (0.0, 0.0),
+                ],
+                &[],
+            ),
+        ),
+        (
+            "C-shape concave",
+            make_polygon(
+                &[
+                    (0.0, 0.0),
+                    (14.0, 0.0),
+                    (14.0, 12.0),
+                    (9.0, 12.0),
+                    (9.0, 4.0),
+                    (5.0, 4.0),
+                    (5.0, 12.0),
+                    (0.0, 12.0),
+                    (0.0, 0.0),
+                ],
+                &[],
+            ),
+        ),
+        (
+            "rect with hole",
+            make_polygon(
+                &[
+                    (0.0, 0.0),
+                    (30.0, 0.0),
+                    (30.0, 22.0),
+                    (0.0, 22.0),
+                    (0.0, 0.0),
+                ],
+                &[&[
+                    (9.0, 7.0),
+                    (21.0, 7.0),
+                    (21.0, 15.0),
+                    (9.0, 15.0),
+                    (9.0, 7.0),
+                ]],
+            ),
+        ),
+        (
+            "40x4 thin rect",
+            make_polygon(
+                &[(0.0, 0.0), (40.0, 0.0), (40.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
+                &[],
+            ),
+        ),
+        (
+            "regular hexagon",
+            make_polygon(
+                &[
+                    (10.0, 0.0),
+                    (5.0, 8.66),
+                    (-5.0, 8.66),
+                    (-10.0, 0.0),
+                    (-5.0, -8.66),
+                    (5.0, -8.66),
+                    (10.0, 0.0),
+                ],
+                &[],
+            ),
+        ),
+        (
+            "right triangle",
+            make_polygon(&[(0.0, 0.0), (12.0, 0.0), (0.0, 9.0), (0.0, 0.0)], &[]),
+        ),
     ]
 }
 
 fn exact_opts() -> MicOptions {
-    MicOptions { engine: MicEngine::ExactOnly, robust_mode: RobustMode::Filtered }
+    MicOptions {
+        engine: MicEngine::ExactOnly,
+        robust_mode: RobustMode::Filtered,
+    }
 }
 
 #[cfg(feature = "geos")]
 fn geos_opts() -> MicOptions {
-    MicOptions { engine: MicEngine::FallbackOnly, robust_mode: RobustMode::Filtered }
+    MicOptions {
+        engine: MicEngine::FallbackOnly,
+        robust_mode: RobustMode::Filtered,
+    }
 }
 
 fn bench_mic_exact(c: &mut Criterion) {

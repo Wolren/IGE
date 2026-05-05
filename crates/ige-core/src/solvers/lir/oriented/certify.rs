@@ -1,7 +1,5 @@
 //! Rectangle certification — SDF-based containment verification and shrink.
 //!
-//! OpenEvolve target: ``--target lir_approximate_oriented/certify.rs --mode balanced``
-//!
 //! These functions verify that a candidate inscribed rectangle is fully inside
 //! the polygon (using the signed-distance field from ``lir_axis_aligned::sdf``),
 //! and if not, shrink it symmetrically until it is contained.

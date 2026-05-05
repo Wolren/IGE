@@ -1,6 +1,5 @@
 //! Maximum Inscribed Circle (MIC) solvers for polygonal inputs.
 
-pub mod certify;
 pub mod index;
 pub mod input;
 pub mod solver;
@@ -180,19 +179,19 @@ fn solve_on_host_polygon(
                     { return Err(e); }
                 }
             };
-            let seg_index = workspace.seg_index.clone();
             match solve_exact(&mut workspace, opts) {
                 Ok(result) => Ok(result),
-                Err(exact_err) => {
+                Err(e) => {
                     #[cfg(feature = "geos")]
                     {
+                        let seg_index = workspace.seg_index.clone();
                         run_geos(host, Some(&seg_index), opts).map_err(|fallback_err| {
-                            MicError::GeosFailed(format!("exact failed ({exact_err}); fallback failed ({fallback_err})"))
+                            MicError::GeosFailed(format!("exact failed ({e}); fallback failed ({fallback_err})"))
                         })
                     }
                     #[cfg(not(feature = "geos"))]
                     {
-                        Err(MicError::ExactFailed(exact_err.to_string()))
+                        Err(MicError::ExactFailed(e.to_string()))
                     }
                 }
             }

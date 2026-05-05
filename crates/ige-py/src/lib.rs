@@ -1,4 +1,4 @@
-use ige_core::solvers::lir::approximate::{solve_lir_approximate_oriented, LirApproxOrientedOptions};
+use ige_core::solvers::lir::oriented::{solve_lir_oriented, LirOrientedOptions};
 use ige_core::{solve_axis_aligned, AxisAlignedOptions, Rectangle, rotate_polygon};
 use ige_core::solvers::mic::{maximum_inscribed_circle, MicEngine, MicOptions, MicUsedEngine, RobustMode};
 use geo::BoundingRect;
@@ -45,7 +45,7 @@ pub fn solve_oriented_lir_py(
         polygon.clone()
     };
 
-    let result = solve_lir_approximate_oriented(&working_polygon, &LirApproxOrientedOptions::default())
+    let result = solve_lir_oriented(&working_polygon, &LirOrientedOptions::default())
         .map_err(|e| PyValueError::new_err(format!("solve failed: {e}")))?;
     let mut rect_poly = result
         .rect_polygon
@@ -150,7 +150,7 @@ fn axis_aligned_demo() -> PyResult<String> {
 
 #[pyclass]
 #[derive(Clone)]
-pub struct PyLirApproxOrientedResult {
+pub struct PyLirOrientedResult {
     #[pyo3(get)]
     pub x_min: f64,
     #[pyo3(get)]
@@ -166,11 +166,11 @@ pub struct PyLirApproxOrientedResult {
 }
 
 #[pyfunction(signature = (exterior, max_aspect_ratio=None, use_parallel_field=false))]
-pub fn solve_lir_approximate_oriented_py(
+pub fn solve_lir_oriented_py(
     exterior: Vec<(f64, f64)>,
     max_aspect_ratio: Option<f64>,
     use_parallel_field: bool,
-) -> PyResult<PyLirApproxOrientedResult> {
+) -> PyResult<PyLirOrientedResult> {
     if exterior.len() < 3 {
         return Err(PyValueError::new_err("polygon exterior must contain at least 3 points"));
     }
@@ -182,20 +182,20 @@ pub fn solve_lir_approximate_oriented_py(
     let exterior_ls = LineString::from(coords);
     let polygon = Polygon::new(exterior_ls, vec![]);
 
-    let mut opts = LirApproxOrientedOptions::default();
+    let mut opts = LirOrientedOptions::default();
     if let Some(ratio) = max_aspect_ratio {
         opts.max_ratio = ratio;
     }
     opts.use_parallel_field = use_parallel_field;
 
-    let result = solve_lir_approximate_oriented(&polygon, &opts)
+    let result = solve_lir_oriented(&polygon, &opts)
         .map_err(|e| PyValueError::new_err(format!("solve failed: {e}")))?;
 
     let rect = result.rect.unwrap_or(ige_core::Rectangle {
         x_min: 0.0, y_min: 0.0, x_max: 0.0, y_max: 0.0,
     });
 
-    Ok(PyLirApproxOrientedResult {
+    Ok(PyLirOrientedResult {
         x_min: rect.x_min,
         y_min: rect.y_min,
         x_max: rect.x_max,
@@ -299,8 +299,8 @@ fn _native(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(solve_axis_aligned_py, m)?)?;
     m.add_function(wrap_pyfunction!(axis_aligned_demo, m)?)?;
 
-    m.add_class::<PyLirApproxOrientedResult>()?;
-    m.add_function(wrap_pyfunction!(solve_lir_approximate_oriented_py, m)?)?;
+    m.add_class::<PyLirOrientedResult>()?;
+    m.add_function(wrap_pyfunction!(solve_lir_oriented_py, m)?)?;
 
     m.add_class::<PyMicResult>()?;
     m.add_function(wrap_pyfunction!(solve_mic_py, m)?)?;

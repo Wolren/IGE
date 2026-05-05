@@ -270,7 +270,7 @@ pub fn fast_convex_quad(host: &HostPolygon) -> Option<MicResult> {
             if nx[k]*cx + ny[k]*cy - line_c[k] <= 0.0 { ok = false; break; }
         }
         if !ok { continue; }
-        let r2 = (nx[0]*cx + ny[0]*cy - line_c[0]);
+        let r2 = nx[0]*cx + ny[0]*cy - line_c[0];
         let r2 = r2 * r2;
         if r2 > best_r2 { best_r2 = r2; best_cx = cx; best_cy = cy; found = true; }
     }

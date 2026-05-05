@@ -16,3 +16,34 @@ pub use histogram::{lrih, lrih_vp};
 pub use grid::{solve_axis_rect_grid, solve_axis_rect_bcrs as solve_axis_rect_fine};
 pub use sdf::{best_effort_shrink, certify_rect, polygon_sdf, rect_sdf_max};
 pub use containment::{rect_fully_contained, contract_rect_to_boundary};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisAlignedSolver {
+    VertexGrid,
+    Exact,
+    UniformGrid,
+}
+
+impl Default for AxisAlignedSolver {
+    fn default() -> Self {
+        Self::VertexGrid
+    }
+}
+
+impl AxisAlignedSolver {
+    pub fn solve(&self, poly: &geo_types::Polygon<f64>, options: &AxisAlignedOptions) -> Option<crate::shared::Rectangle> {
+        match self {
+            AxisAlignedSolver::VertexGrid => vertex_grid::solve_vertex_grid(poly, options),
+            AxisAlignedSolver::Exact => exact::solve_axis_exact(poly, options),
+            AxisAlignedSolver::UniformGrid => {
+                let result = grid::solve_axis_rect_grid(poly, options.max_grid, options.max_ratio)?;
+                Some(crate::shared::Rectangle {
+                    x_min: result.0,
+                    y_min: result.1,
+                    x_max: result.2,
+                    y_max: result.3,
+                })
+            }
+        }
+    }
+}

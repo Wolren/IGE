@@ -1,8 +1,6 @@
 //! Inscribed Geometry Engine (IGE) - Largest Inscribed Rectangle algorithms
 
 pub mod algorithms;
-pub mod cpu;
-pub mod geometry;
 pub mod shared;
 pub mod tuning;
 
@@ -11,8 +9,10 @@ pub mod solvers;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
-pub use cpu::{solve_lir_approximate_oriented_parallel, solve_oriented_lir, solve_axis_aligned, AxisAlignedOptions, Rectangle, SolverOptions, detect_polygon_type, rotate_polygon};
-pub use solvers::lir::approximate::{solve_lir_approximate_oriented, LirApproxOrientedOptions, LirApproxOrientedResult};
+pub use algorithms::LirSolver;
+pub use solvers::lir::axis_aligned::{solve_vertex_grid, AxisAlignedOptions, detect_polygon_type};
+pub use solvers::lir::oriented::{solve_lir_oriented, LirOrientedOptions, LirOrientedResult};
+pub use solvers::lir::oriented::parallel::solve_lir_oriented_parallel;
 pub use solvers::mic::{
     maximum_inscribed_circle,
     maximum_inscribed_circle_multipolygon,
@@ -24,5 +24,14 @@ pub use solvers::mic::{
     RobustMode,
 };
 
-pub use shared::{PolygonType, LirError, Result};
-pub use shared::{AlgorithmCategory, AlgorithmPrecision, AlgorithmSpeed, SolverBackend};
+pub use shared::{PolygonType, LirError, Result, Rectangle, SolverOptions, rotate_polygon, AlgorithmCategory, AlgorithmPrecision, AlgorithmSpeed, SolverBackend};
+
+pub use geo_types::Polygon;
+
+pub fn solve_oriented_lir(poly: &Polygon<f64>) -> Option<Rectangle> {
+    solvers::lir::axis_aligned::solve_vertex_grid(poly, &AxisAlignedOptions::default())
+}
+
+pub fn solve_axis_aligned(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> Option<Rectangle> {
+    solvers::lir::axis_aligned::solve_vertex_grid(poly, options)
+}

@@ -97,7 +97,12 @@ pub struct RectCandidate {
 
 impl RectCandidate {
     pub fn new(x_min: f64, y_min: f64, x_max: f64, y_max: f64) -> Self {
-        Self { x_min, y_min, x_max, y_max }
+        Self {
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+        }
     }
 
     pub fn area(&self) -> f64 {
@@ -131,7 +136,7 @@ impl GpuContext {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
-            .ok_or_else(|| anyhow::anyhow!("Failed to find suitable GPU adapter"))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to find suitable GPU adapter"))?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -150,9 +155,9 @@ impl GpuContext {
         });
 
         // Load and compile SDF shader
-        let sdf_shader = include_str!("shaders/bcrs_sdf.wgsl");
+        let sdf_shader = include_str!("shaders/lir_sdf.wgsl");
         let sdf_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("BCRS SDF Shader"),
+            label: Some("LIR SDF Shader"),
             source: wgpu::ShaderSource::Wgsl(sdf_shader.into()),
         });
 
@@ -219,7 +224,7 @@ impl GpuContext {
         });
 
         let sdf_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("BCRS SDF Pipeline"),
+            label: Some("LIR Grid Batch Pipeline"),
             layout: Some(&sdf_pipeline_layout),
             module: &sdf_sm,
             entry_point: "main",
@@ -227,57 +232,58 @@ impl GpuContext {
         });
 
         // Load and compile batch grid scorer shader
-        let grid_shader = include_str!("shaders/bcrs_grid_batch.wgsl");
+        let grid_shader = include_str!("shaders/lir_grid_batch.wgsl");
         let grid_sm = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("BCRS Grid Batch Shader"),
+            label: Some("LIR Grid Batch Shader"),
             source: wgpu::ShaderSource::Wgsl(grid_shader.into()),
         });
 
-        let grid_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Grid Batch Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let grid_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Grid Batch Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                ],
+            });
 
         let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Grid Batch Pipeline Layout"),
@@ -286,7 +292,7 @@ impl GpuContext {
         });
 
         let grid_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("BCRS Grid Batch Pipeline"),
+            label: Some("LIR Grid Batch Pipeline"),
             layout: Some(&grid_pipeline_layout),
             module: &grid_sm,
             entry_point: "main",
@@ -308,7 +314,10 @@ impl GpuContext {
     fn upload_polygon(&self, polygon: &Polygon<f64>) -> Result<wgpu::Buffer> {
         let coords = polygon.exterior().0.clone();
         if coords.len() > MAX_VERTICES / 2 {
-            anyhow::bail!("Polygon has too many vertices for GPU (max {})", MAX_VERTICES / 2);
+            anyhow::bail!(
+                "Polygon has too many vertices for GPU (max {})",
+                MAX_VERTICES / 2
+            );
         }
         let mut poly_data = PolygonDataGpu {
             vertex_count: coords.len() as u32,
@@ -321,11 +330,13 @@ impl GpuContext {
             poly_data.vertices[i * 2] = coord.x as f32;
             poly_data.vertices[i * 2 + 1] = coord.y as f32;
         }
-        Ok(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Polygon Buffer"),
-            contents: bytemuck::cast_slice(&[poly_data]),
-            usage: wgpu::BufferUsages::STORAGE,
-        }))
+        Ok(self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Polygon Buffer"),
+                contents: bytemuck::cast_slice(&[poly_data]),
+                usage: wgpu::BufferUsages::STORAGE,
+            }))
     }
 
     fn read_staging<T: Pod>(&self, staging: &wgpu::Buffer, _count: usize) -> Result<Vec<T>> {
@@ -363,11 +374,13 @@ impl GpuContext {
 
         let num = gpu_candidates.len();
 
-        let candidate_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Candidate Buffer"),
-            contents: bytemuck::cast_slice(&gpu_candidates),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let candidate_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Candidate Buffer"),
+                contents: bytemuck::cast_slice(&gpu_candidates),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         let result_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Result Buffer"),
@@ -387,15 +400,26 @@ impl GpuContext {
             label: Some("Rect Bind Group"),
             layout: &self.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: polygon_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: candidate_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: result_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: polygon_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: candidate_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result_buffer.as_entire_binding(),
+                },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Rect Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Rect Encoder"),
+            });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Rect Compute Pass"),
@@ -406,16 +430,22 @@ impl GpuContext {
             pass.dispatch_workgroups((num as u32 + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE, 1, 1);
         }
         encoder.copy_buffer_to_buffer(
-            &result_buffer, 0, &staging, 0,
+            &result_buffer,
+            0,
+            &staging,
+            0,
             (num * std::mem::size_of::<CandidateResultGpu>()) as u64,
         );
         self.queue.submit(Some(encoder.finish()));
 
         let gpu_results: Vec<CandidateResultGpu> = self.read_staging(&staging, num)?;
-        Ok(gpu_results.iter().map(|r| CandidateResult {
-            area: r.area,
-            is_valid: r.is_valid != 0,
-        }).collect())
+        Ok(gpu_results
+            .iter()
+            .map(|r| CandidateResult {
+                area: r.area,
+                is_valid: r.is_valid != 0,
+            })
+            .collect())
     }
 
     /// Evaluate SDF for a batch of rects against a polygon.
@@ -430,17 +460,22 @@ impl GpuContext {
         let gpu_rects: Vec<SdfRectInputGpu> = rects
             .iter()
             .map(|&(x0, y0, x1, y1)| SdfRectInputGpu {
-                x0: x0 as f32, y0: y0 as f32, x1: x1 as f32, y1: y1 as f32,
+                x0: x0 as f32,
+                y0: y0 as f32,
+                x1: x1 as f32,
+                y1: y1 as f32,
             })
             .collect();
 
         let num = gpu_rects.len();
 
-        let rect_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("SDF Rect Buffer"),
-            contents: bytemuck::cast_slice(&gpu_rects),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let rect_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("SDF Rect Buffer"),
+                contents: bytemuck::cast_slice(&gpu_rects),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
 
         let result_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("SDF Result Buffer"),
@@ -460,15 +495,26 @@ impl GpuContext {
             label: Some("SDF Bind Group"),
             layout: &self.sdf_bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: polygon_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: rect_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: result_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: polygon_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: rect_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result_buffer.as_entire_binding(),
+                },
             ],
         });
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("SDF Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("SDF Encoder"),
+            });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("SDF Compute Pass"),
@@ -479,7 +525,10 @@ impl GpuContext {
             pass.dispatch_workgroups((num as u32 + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE, 1, 1);
         }
         encoder.copy_buffer_to_buffer(
-            &result_buffer, 0, &staging, 0,
+            &result_buffer,
+            0,
+            &staging,
+            0,
             (num * std::mem::size_of::<SdfResultGpu>()) as u64,
         );
         self.queue.submit(Some(encoder.finish()));
@@ -492,11 +541,23 @@ impl GpuContext {
 /// GPU data-types for batch grid scorer
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct GridUniforms { max_grid_steps: u32, n_polygons: u32, _pad0: u32, _pad1: u32 }
+struct GridUniforms {
+    max_grid_steps: u32,
+    n_polygons: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct GridPolyHeader { vertex_offset: u32, vertex_count: u32, min_x: f32, min_y: f32, max_x: f32, max_y: f32 }
+struct GridPolyHeader {
+    vertex_offset: u32,
+    vertex_count: u32,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+}
 
 impl GpuContext {
     /// Batch-scored grid masks for many polygons in one GPU dispatch.
@@ -529,24 +590,35 @@ impl GpuContext {
         }
 
         let np = polygons.len() as u32;
-        let uniforms = GridUniforms { max_grid_steps: grid_steps, n_polygons: np, _pad0: 0, _pad1: 0 };
+        let uniforms = GridUniforms {
+            max_grid_steps: grid_steps,
+            n_polygons: np,
+            _pad0: 0,
+            _pad1: 0,
+        };
         let mask_size = (np * grid_steps * grid_steps) as usize;
 
-        let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Grid Uniforms"),
-            contents: bytemuck::cast_slice(&[uniforms]),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let vert_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Grid Verts"),
-            contents: bytemuck::cast_slice(&verts),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let header_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Grid Headers"),
-            contents: bytemuck::cast_slice(&headers),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let uniform_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Grid Uniforms"),
+                contents: bytemuck::cast_slice(&[uniforms]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let vert_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Grid Verts"),
+                contents: bytemuck::cast_slice(&verts),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let header_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Grid Headers"),
+                contents: bytemuck::cast_slice(&headers),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let result_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Grid Mask"),
             size: (mask_size * 4) as u64,
@@ -564,16 +636,30 @@ impl GpuContext {
             label: Some("Grid Batch BG"),
             layout: &self.grid_bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: vert_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: header_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: result_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: vert_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: header_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: result_buf.as_entire_binding(),
+                },
             ],
         });
 
-        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Grid Batch Enc"),
-        });
+        let mut enc = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Grid Batch Enc"),
+            });
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Grid Batch Pass"),
@@ -609,7 +695,6 @@ pub fn get_gpu_context() -> Option<&'static GpuContext> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geo_types::coord;
 
     #[test]
     fn test_gpu_context_creation() {

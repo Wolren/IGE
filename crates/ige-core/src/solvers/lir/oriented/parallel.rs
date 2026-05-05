@@ -1,4 +1,4 @@
-//! Parallel ray-shooting candidate-field solver (LIR Approximate Oriented improvement).
+//! Parallel ray-shooting candidate-field solver (LIR Oriented improvement).
 //!
 //! Instead of pruning angle candidates heuristically, this solver evaluates
 //! **every** candidate angle with a scanline-rasterised grid.  Each row is
@@ -12,7 +12,7 @@
 //!  2. Coarse sweep -- all angles at uniform resolution in parallel.
 //!  3. Pick top-k by area.
 //!  4. Fine solve -- vertex-grid mask (parallel), LRIH, SDF-expand, certify.
-//!  5. Return best-certified LirApproxOrientedResult.
+//!  5. Return best-certified LirOrientedResult.
 
 use geo::{BoundingRect, Centroid, ConvexHull};
 use geo_types::{Coord, LineString, Point, Polygon};
@@ -21,7 +21,7 @@ use rayon::prelude::*;
 use super::candidates::{edge_candidate_angles, upper_bound_area};
 use super::expand::expand_rect_to_boundary;
 use super::certify::{certify_and_adjust, best_effort_shrink_to_cover};
-use super::{LirApproxOrientedOptions, LirApproxOrientedResult};
+use super::{LirOrientedOptions, LirOrientedResult};
 use super::super::axis_aligned::histogram::{lrih, lrih_vp};
 use crate::shared::{LirError, Rectangle, Result};
 
@@ -166,7 +166,7 @@ fn build_mask_parallel(
 
 // --- Angle generation -----------------------------------------------------
 
-fn generate_angles(poly: &Polygon<f64>, options: &LirApproxOrientedOptions) -> Vec<f64> {
+fn generate_angles(poly: &Polygon<f64>, options: &LirOrientedOptions) -> Vec<f64> {
     let mut angles = edge_candidate_angles(poly, 4.0, 12);
     if angles.len() < options.field_min_angles {
         let step = options.field_angle_step.max(1);
@@ -301,7 +301,7 @@ fn fine_solve_candidate(
     field_max_coords: usize,
     cert_eps: f64,
     cert_max_shrink: f64,
-) -> Option<LirApproxOrientedResult> {
+) -> Option<LirOrientedResult> {
     let angle = candidate.angle;
     let centroid: Point<f64> = poly.centroid()?.into();
 
@@ -387,7 +387,7 @@ fn build_result(
     centroid: &Point<f64>,
     cert_eps: f64,
     cert_max_shrink: f64,
-) -> Option<LirApproxOrientedResult> {
+) -> Option<LirOrientedResult> {
     let raw_poly = Polygon::new(
         LineString::from(vec![
             rotate_point(x0, y0, angle, centroid),
@@ -414,7 +414,7 @@ fn build_result(
         };
 
     let bb = final_poly.bounding_rect()?;
-    Some(LirApproxOrientedResult {
+    Some(LirOrientedResult {
         rect: Some(Rectangle {
             x_min: bb.min().x,
             y_min: bb.min().y,
@@ -451,16 +451,16 @@ fn rotate_point(x: f64, y: f64, angle_deg: f64, origin: &Point<f64>) -> Coord<f6
 /// refines the top-k with a vertex-grid fine solve, and returns the
 /// best-certified rectangle.
 ///
-/// This is an alternative to `solve_lir_approximate_oriented` that sacrifices the Brent
+/// This is an alternative to `solve_lir_oriented` that sacrifices the Brent
 /// angle-polish and heuristic pruning stages in exchange for exhaustively
 /// evaluating more angles in parallel.
-pub fn solve_lir_approximate_oriented_parallel(poly: &Polygon<f64>, options: &LirApproxOrientedOptions) -> Result<LirApproxOrientedResult> {
+pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOptions) -> Result<LirOrientedResult> {
     // Fast path for simple convex shapes
     if let Some((rect_poly, area, angle, _)) =
         super::fast::maybe_fast_path(poly, options.max_ratio)
     {
         let bb = rect_poly.bounding_rect().unwrap();
-        return Ok(LirApproxOrientedResult {
+        return Ok(LirOrientedResult {
             rect: Some(Rectangle {
                 x_min: bb.min().x,
                 y_min: bb.min().y,
@@ -569,7 +569,7 @@ pub fn solve_lir_approximate_oriented_parallel(poly: &Polygon<f64>, options: &Li
 
     let top_k = candidates.len().min(options.top_k.max(5));
 
-    let fine_results: Vec<Option<LirApproxOrientedResult>> = candidates[..top_k]
+    let fine_results: Vec<Option<LirOrientedResult>> = candidates[..top_k]
         .par_iter()
         .map(|cand| {
             fine_solve_candidate(
@@ -605,7 +605,7 @@ mod tests {
                 coord! {x:0.0,y:0.0},
             ]), vec![],
         );
-        let r = solve_lir_approximate_oriented_parallel(&poly, &LirApproxOrientedOptions::default()).unwrap();
+        let r = solve_lir_oriented_parallel(&poly, &LirOrientedOptions::default()).unwrap();
         assert!(r.area > 80.0);
         assert!(r.rect_polygon.is_some());
     }
@@ -618,7 +618,7 @@ mod tests {
                 coord! {x:0.0,y:10.0}, coord! {x:0.0,y:0.0},
             ]), vec![],
         );
-        let r = solve_lir_approximate_oriented_parallel(&poly, &LirApproxOrientedOptions::default()).unwrap();
+        let r = solve_lir_oriented_parallel(&poly, &LirOrientedOptions::default()).unwrap();
         assert!(r.area > 20.0);
         assert!(r.rect_polygon.is_some());
     }
@@ -634,9 +634,9 @@ mod tests {
                 coord! {x:0.0,y:0.0},
             ]), vec![],
         );
-        let mut opts = LirApproxOrientedOptions::default();
+        let mut opts = LirOrientedOptions::default();
         opts.max_ratio = 2.0;
-        let r = solve_lir_approximate_oriented_parallel(&poly, &opts).unwrap();
+        let r = solve_lir_oriented_parallel(&poly, &opts).unwrap();
         assert!(r.area > 45.0 && r.area < 55.0, "area={}", r.area);
         assert!(r.rect_polygon.is_some());
     }
@@ -651,9 +651,9 @@ mod tests {
                 coord! {x:0.0,y:10.0}, coord! {x:0.0,y:0.0},
             ]), vec![],
         );
-        let mut opts = LirApproxOrientedOptions::default();
+        let mut opts = LirOrientedOptions::default();
         opts.max_ratio = 1.0;
-        let r = solve_lir_approximate_oriented_parallel(&poly, &opts).unwrap();
+        let r = solve_lir_oriented_parallel(&poly, &opts).unwrap();
         // Square of side ~5 would be 25 area; ratio=1 ensures square
         assert!(r.area > 20.0 && r.area < 30.0, "area={}", r.area);
         assert!(r.rect_polygon.is_some());

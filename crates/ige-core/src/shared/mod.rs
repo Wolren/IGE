@@ -1,8 +1,9 @@
-//! Shared types for LIR algorithms.
+//! Shared types and utilities for LIR algorithms.
 //!
 //! These types are used across all solver implementations.
 
-use geo_types::{Coord, LineString, Polygon};
+use geo::Centroid;
+use geo_types::{Coord, LineString, Point, Polygon};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -17,15 +18,30 @@ impl Rectangle {
     pub fn area(&self) -> f64 {
         (self.x_max - self.x_min) * (self.y_max - self.y_min)
     }
-    
+
     pub fn to_polygon(&self) -> Polygon<f64> {
         Polygon::new(
             LineString::from(vec![
-                Coord { x: self.x_min, y: self.y_min },
-                Coord { x: self.x_max, y: self.y_min },
-                Coord { x: self.x_max, y: self.y_max },
-                Coord { x: self.x_min, y: self.y_max },
-                Coord { x: self.x_min, y: self.y_min },
+                Coord {
+                    x: self.x_min,
+                    y: self.y_min,
+                },
+                Coord {
+                    x: self.x_max,
+                    y: self.y_min,
+                },
+                Coord {
+                    x: self.x_max,
+                    y: self.y_max,
+                },
+                Coord {
+                    x: self.x_min,
+                    y: self.y_max,
+                },
+                Coord {
+                    x: self.x_min,
+                    y: self.y_min,
+                },
             ]),
             vec![],
         )
@@ -100,4 +116,40 @@ impl Default for SolverOptions {
             gpu_threshold: 1000,
         }
     }
+}
+
+pub fn rotate_polygon(poly: &Polygon<f64>, angle_deg: f64) -> Polygon<f64> {
+    if angle_deg.abs() < 1e-9 {
+        return poly.clone();
+    }
+    match poly.centroid() {
+        Some(centroid) => rotate_polygon_around(poly, angle_deg, &centroid),
+        None => poly.clone(),
+    }
+}
+
+pub fn rotate_polygon_around(
+    poly: &Polygon<f64>,
+    angle_deg: f64,
+    center: &Point<f64>,
+) -> Polygon<f64> {
+    let rad = angle_deg.to_radians();
+    let cos_a = rad.cos();
+    let sin_a = rad.sin();
+    let cx = center.x();
+    let cy = center.y();
+
+    let rotate = |c: &Coord<f64>| Coord {
+        x: cx + (c.x - cx) * cos_a - (c.y - cy) * sin_a,
+        y: cy + (c.x - cx) * sin_a + (c.y - cy) * cos_a,
+    };
+
+    let ext = LineString::from(poly.exterior().0.iter().map(&rotate).collect::<Vec<_>>());
+    let interiors: Vec<LineString<f64>> = poly
+        .interiors()
+        .iter()
+        .map(|r| LineString::from(r.0.iter().map(&rotate).collect::<Vec<_>>()))
+        .collect();
+
+    Polygon::new(ext, interiors)
 }

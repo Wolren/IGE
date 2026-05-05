@@ -10,9 +10,9 @@ use ordered_float::OrderedFloat;
 use rayon::prelude::*;
 use std::collections::HashSet;
 
-use super::containment::rect_fully_contained;
+pub use super::AxisAlignedOptions;
+pub use super::containment::rect_fully_contained;
 use crate::shared::Rectangle;
-use super::vertex_grid::AxisAlignedOptions;
 
 const EPS: f64 = 1e-12;
 const REFINE_ITERS: usize = 5;
