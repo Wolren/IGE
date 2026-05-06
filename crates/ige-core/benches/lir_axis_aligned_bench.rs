@@ -5,7 +5,12 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use geo_types::{Coord, LineString, Polygon};
-use ige_core::{solve_oriented_lir, SolverOptions};
+use ige_core::{
+    solve_axis_rect_grid_with_backend,
+    solve_oriented_lir,
+    MaskBackend,
+    SolverOptions,
+};
 
 fn make_polygon(coords: &[(f64, f64)]) -> Polygon<f64> {
     let ext: Vec<Coord<f64>> = coords.iter().map(|(x, y)| Coord { x: *x, y: *y }).collect();
@@ -182,12 +187,41 @@ fn benchmark_polygon_sizes(c: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_axis_grid_backends(c: &mut Criterion) {
+    let mut group = c.benchmark_group("axis_grid_backends");
+    let poly = concave_l_shape();
+    let grid_steps = 80usize;
+    let max_ratio = 0.0;
+
+    group.bench_function("cpu", |b| {
+        b.iter(|| solve_axis_rect_grid_with_backend(&poly, grid_steps, max_ratio, MaskBackend::Cpu));
+    });
+
+    #[cfg(feature = "gpu")]
+    group.bench_function("gpu_sdf", |b| {
+        b.iter(|| solve_axis_rect_grid_with_backend(&poly, grid_steps, max_ratio, MaskBackend::GpuSdf));
+    });
+
+    #[cfg(feature = "gpu")]
+    group.bench_function("gpu_grid", |b| {
+        b.iter(|| solve_axis_rect_grid_with_backend(&poly, grid_steps, max_ratio, MaskBackend::GpuGridBatch));
+    });
+
+    #[cfg(feature = "gpu")]
+    group.bench_function("auto", |b| {
+        b.iter(|| solve_axis_rect_grid_with_backend(&poly, grid_steps, max_ratio, MaskBackend::Auto));
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_basic_shapes,
     benchmark_concave_polygons,
     benchmark_rotation,
     benchmark_aspect_ratio,
-    benchmark_polygon_sizes
+    benchmark_polygon_sizes,
+    benchmark_axis_grid_backends
 );
 criterion_main!(benches);

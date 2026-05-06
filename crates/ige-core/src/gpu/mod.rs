@@ -9,6 +9,7 @@ use bytemuck::{Pod, Zeroable};
 use geo::BoundingRect;
 use geo_types::Polygon;
 use wgpu::util::DeviceExt;
+use crate::solvers::lir::axis_aligned::{polygon_sdf, rect_fully_contained, rect_sdf_max};
 
 /// Maximum polygon vertices supported by GPU shader.
 /// Must match `array<f32, 4096>` in WGSL -- 4096 floats = 2048 (x,y) pairs.
@@ -78,6 +79,79 @@ struct SdfResultGpu {
 pub struct CandidateResult {
     pub area: f32,
     pub is_valid: bool,
+}
+
+/// Backend selector for testable CPU/GPU workload execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkloadBackend {
+    Cpu,
+    Gpu,
+}
+
+/// Selector for grid-mask workload implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridMaskEngine {
+    Cpu,
+    /// Uses `lir_sdf.wgsl` by submitting degenerate rects `(x,y,x,y)`.
+    GpuSdf,
+    /// Uses `lir_grid_batch.wgsl` for one-polygon grid dispatch.
+    GpuBatch,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GpuCoordTransform {
+    origin_x: f64,
+    origin_y: f64,
+    scale: f64,
+}
+
+impl GpuCoordTransform {
+    fn from_bbox(min_x: f64, min_y: f64, max_x: f64, max_y: f64) -> Self {
+        let span_x = max_x - min_x;
+        let span_y = max_y - min_y;
+        let span = span_x.max(span_y);
+        let scale = if span > 0.0 { 1.0 / span } else { 1.0 };
+        Self {
+            origin_x: (min_x + max_x) * 0.5,
+            origin_y: (min_y + max_y) * 0.5,
+            scale,
+        }
+    }
+
+    fn from_polygon(polygon: &Polygon<f64>) -> Result<Self> {
+        let bb = polygon
+            .bounding_rect()
+            .ok_or_else(|| anyhow::anyhow!("Polygon has no bounding rectangle"))?;
+        Ok(Self::from_bbox(bb.min().x, bb.min().y, bb.max().x, bb.max().y))
+    }
+
+    #[inline]
+    fn norm_x(self, x: f64) -> f32 {
+        ((x - self.origin_x) * self.scale) as f32
+    }
+
+    #[inline]
+    fn norm_y(self, y: f64) -> f32 {
+        ((y - self.origin_y) * self.scale) as f32
+    }
+
+    #[inline]
+    fn denorm_area(self, area_scaled: f32) -> f32 {
+        if self.scale > 0.0 {
+            (area_scaled as f64 / (self.scale * self.scale)) as f32
+        } else {
+            area_scaled
+        }
+    }
+
+    #[inline]
+    fn denorm_distance(self, dist_scaled: f32) -> f32 {
+        if self.scale > 0.0 {
+            (dist_scaled as f64 / self.scale) as f32
+        } else {
+            dist_scaled
+        }
+    }
 }
 
 /// SDF result for one rect
@@ -311,7 +385,10 @@ impl GpuContext {
         })
     }
 
-    fn upload_polygon(&self, polygon: &Polygon<f64>) -> Result<wgpu::Buffer> {
+    fn upload_polygon(&self, polygon: &Polygon<f64>, tx: GpuCoordTransform) -> Result<wgpu::Buffer> {
+        if !polygon.interiors().is_empty() {
+            anyhow::bail!("GPU kernels currently support polygons without holes; use CPU backend");
+        }
         let coords = polygon.exterior().0.clone();
         if coords.len() > MAX_VERTICES / 2 {
             anyhow::bail!(
@@ -327,8 +404,8 @@ impl GpuContext {
             vertices: [0.0; MAX_VERTICES],
         };
         for (i, coord) in coords.iter().enumerate() {
-            poly_data.vertices[i * 2] = coord.x as f32;
-            poly_data.vertices[i * 2 + 1] = coord.y as f32;
+            poly_data.vertices[i * 2] = tx.norm_x(coord.x);
+            poly_data.vertices[i * 2 + 1] = tx.norm_y(coord.y);
         }
         Ok(self
             .device
@@ -360,15 +437,19 @@ impl GpuContext {
         polygon: &Polygon<f64>,
         candidates: &[RectCandidate],
     ) -> Result<Vec<CandidateResult>> {
-        let polygon_buffer = self.upload_polygon(polygon)?;
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tx = GpuCoordTransform::from_polygon(polygon)?;
+        let polygon_buffer = self.upload_polygon(polygon, tx)?;
 
         let gpu_candidates: Vec<RectCandidateGpu> = candidates
             .iter()
             .map(|c| RectCandidateGpu {
-                x_min: c.x_min as f32,
-                y_min: c.y_min as f32,
-                x_max: c.x_max as f32,
-                y_max: c.y_max as f32,
+                x_min: tx.norm_x(c.x_min),
+                y_min: tx.norm_y(c.y_min),
+                x_max: tx.norm_x(c.x_max),
+                y_max: tx.norm_y(c.y_max),
             })
             .collect();
 
@@ -442,7 +523,7 @@ impl GpuContext {
         Ok(gpu_results
             .iter()
             .map(|r| CandidateResult {
-                area: r.area,
+                area: tx.denorm_area(r.area),
                 is_valid: r.is_valid != 0,
             })
             .collect())
@@ -455,15 +536,19 @@ impl GpuContext {
         polygon: &Polygon<f64>,
         rects: &[(f64, f64, f64, f64)],
     ) -> Result<Vec<f32>> {
-        let polygon_buffer = self.upload_polygon(polygon)?;
+        if rects.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tx = GpuCoordTransform::from_polygon(polygon)?;
+        let polygon_buffer = self.upload_polygon(polygon, tx)?;
 
         let gpu_rects: Vec<SdfRectInputGpu> = rects
             .iter()
             .map(|&(x0, y0, x1, y1)| SdfRectInputGpu {
-                x0: x0 as f32,
-                y0: y0 as f32,
-                x1: x1 as f32,
-                y1: y1 as f32,
+                x0: tx.norm_x(x0),
+                y0: tx.norm_y(y0),
+                x1: tx.norm_x(x1),
+                y1: tx.norm_y(y1),
             })
             .collect();
 
@@ -534,7 +619,10 @@ impl GpuContext {
         self.queue.submit(Some(encoder.finish()));
 
         let gpu_results: Vec<SdfResultGpu> = self.read_staging(&staging, num)?;
-        Ok(gpu_results.iter().map(|r| r.max_sdf).collect())
+        Ok(gpu_results
+            .iter()
+            .map(|r| tx.denorm_distance(r.max_sdf))
+            .collect())
     }
 }
 
@@ -567,25 +655,39 @@ impl GpuContext {
         polygons: &[&Polygon<f64>],
         grid_steps: u32,
     ) -> Result<Vec<u32>> {
+        if polygons.is_empty() {
+            return Ok(Vec::new());
+        }
+        if grid_steps == 0 {
+            anyhow::bail!("grid_steps must be > 0");
+        }
         // Build flat vertex buffer + headers
         let mut verts = Vec::<f32>::new();
         let mut headers = Vec::<GridPolyHeader>::new();
         for poly in polygons {
-            let bb = poly.bounding_rect().unwrap();
+            if !poly.interiors().is_empty() {
+                anyhow::bail!("GPU grid batch currently supports polygons without holes; use CPU backend");
+            }
+            let bb = poly
+                .bounding_rect()
+                .ok_or_else(|| anyhow::anyhow!("Polygon has no bounding rectangle"))?;
+            let tx = GpuCoordTransform::from_bbox(bb.min().x, bb.min().y, bb.max().x, bb.max().y);
+            let span_x_norm = ((bb.max().x - bb.min().x) * tx.scale) as f32;
+            let span_y_norm = ((bb.max().y - bb.min().y) * tx.scale) as f32;
             let coords = poly.exterior();
             let v0 = verts.len() as u32 / 2;
             for c in coords.0.iter() {
-                verts.push(c.x as f32);
-                verts.push(c.y as f32);
+                verts.push(tx.norm_x(c.x));
+                verts.push(tx.norm_y(c.y));
             }
             let vc = coords.0.len() as u32;
             headers.push(GridPolyHeader {
                 vertex_offset: v0,
                 vertex_count: vc,
-                min_x: bb.min().x as f32,
-                min_y: bb.min().y as f32,
-                max_x: bb.max().x as f32,
-                max_y: bb.max().y as f32,
+                min_x: -0.5 * span_x_norm,
+                min_y: -0.5 * span_y_norm,
+                max_x: 0.5 * span_x_norm,
+                max_y: 0.5 * span_y_norm,
             });
         }
 
@@ -679,6 +781,124 @@ impl GpuContext {
     }
 }
 
+fn evaluate_candidates_cpu(
+    polygon: &Polygon<f64>,
+    candidates: &[RectCandidate],
+) -> Vec<CandidateResult> {
+    candidates
+        .iter()
+        .map(|c| CandidateResult {
+            area: c.area() as f32,
+            is_valid: rect_fully_contained(polygon, c.x_min, c.y_min, c.x_max, c.y_max),
+        })
+        .collect()
+}
+
+fn evaluate_rect_sdf_batch_cpu(polygon: &Polygon<f64>, rects: &[(f64, f64, f64, f64)]) -> Vec<f32> {
+    rects
+        .iter()
+        .map(|&(x0, y0, x1, y1)| rect_sdf_max(polygon, x0, y0, x1, y1) as f32)
+        .collect()
+}
+
+fn evaluate_grid_batch_cpu(polygons: &[&Polygon<f64>], grid_steps: u32) -> Result<Vec<u32>> {
+    if grid_steps == 0 {
+        anyhow::bail!("grid_steps must be > 0");
+    }
+    let cells_per_poly = (grid_steps * grid_steps) as usize;
+    let mut out = vec![0u32; polygons.len() * cells_per_poly];
+    for (pi, poly) in polygons.iter().enumerate() {
+        let bb = poly
+            .bounding_rect()
+            .ok_or_else(|| anyhow::anyhow!("Polygon has no bounding rectangle"))?;
+        let span_x = bb.max().x - bb.min().x;
+        let span_y = bb.max().y - bb.min().y;
+        if span_x <= 0.0 || span_y <= 0.0 {
+            continue;
+        }
+        for gy in 0..grid_steps {
+            for gx in 0..grid_steps {
+                let cx = bb.min().x + span_x * (gx as f64 + 0.5) / grid_steps as f64;
+                let cy = bb.min().y + span_y * (gy as f64 + 0.5) / grid_steps as f64;
+                let idx = pi * cells_per_poly + gy as usize * grid_steps as usize + gx as usize;
+                out[idx] = u32::from(polygon_sdf(poly, cx, cy) <= crate::tuning::CONTAIN_BOUNDARY_EPS);
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn evaluate_candidates_with_backend(
+    polygon: &Polygon<f64>,
+    candidates: &[RectCandidate],
+    backend: WorkloadBackend,
+) -> Result<Vec<CandidateResult>> {
+    match backend {
+        WorkloadBackend::Cpu => Ok(evaluate_candidates_cpu(polygon, candidates)),
+        WorkloadBackend::Gpu => {
+            let ctx = get_gpu_context().ok_or_else(|| anyhow::anyhow!("GPU context unavailable"))?;
+            ctx.evaluate_candidates(polygon, candidates)
+        }
+    }
+}
+
+pub fn evaluate_rect_sdf_batch_with_backend(
+    polygon: &Polygon<f64>,
+    rects: &[(f64, f64, f64, f64)],
+    backend: WorkloadBackend,
+) -> Result<Vec<f32>> {
+    match backend {
+        WorkloadBackend::Cpu => Ok(evaluate_rect_sdf_batch_cpu(polygon, rects)),
+        WorkloadBackend::Gpu => {
+            let ctx = get_gpu_context().ok_or_else(|| anyhow::anyhow!("GPU context unavailable"))?;
+            ctx.evaluate_rect_sdf_batch(polygon, rects)
+        }
+    }
+}
+
+pub fn evaluate_grid_mask_with_engine(
+    polygon: &Polygon<f64>,
+    grid_steps: u32,
+    engine: GridMaskEngine,
+) -> Result<Vec<bool>> {
+    match engine {
+        GridMaskEngine::Cpu => {
+            let cpu = evaluate_grid_batch_cpu(&[polygon], grid_steps)?;
+            Ok(cpu.into_iter().map(|v| v != 0).collect())
+        }
+        GridMaskEngine::GpuBatch => {
+            let ctx = get_gpu_context().ok_or_else(|| anyhow::anyhow!("GPU context unavailable"))?;
+            let gpu = ctx.evaluate_grid_batch(&[polygon], grid_steps)?;
+            Ok(gpu.into_iter().map(|v| v != 0).collect())
+        }
+        GridMaskEngine::GpuSdf => {
+            let ctx = get_gpu_context().ok_or_else(|| anyhow::anyhow!("GPU context unavailable"))?;
+            let bb = polygon
+                .bounding_rect()
+                .ok_or_else(|| anyhow::anyhow!("Polygon has no bounding rectangle"))?;
+            if grid_steps == 0 {
+                anyhow::bail!("grid_steps must be > 0");
+            }
+            let span_x = bb.max().x - bb.min().x;
+            let span_y = bb.max().y - bb.min().y;
+            let rects: Vec<(f64, f64, f64, f64)> = (0..grid_steps)
+                .flat_map(|gy| {
+                    (0..grid_steps).map(move |gx| {
+                        let cx = bb.min().x + span_x * (gx as f64 + 0.5) / grid_steps as f64;
+                        let cy = bb.min().y + span_y * (gy as f64 + 0.5) / grid_steps as f64;
+                        (cx, cy, cx, cy)
+                    })
+                })
+                .collect();
+            let values = ctx.evaluate_rect_sdf_batch(polygon, &rects)?;
+            Ok(values
+                .into_iter()
+                .map(|v| v as f64 <= crate::tuning::CONTAIN_BOUNDARY_EPS)
+                .collect())
+        }
+    }
+}
+
 #[cfg(test)]
 
 /// Try to create GPU context, returning None if unavailable
@@ -695,9 +915,56 @@ pub fn get_gpu_context() -> Option<&'static GpuContext> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use geo_types::{coord, LineString};
+
+    fn unit_square() -> Polygon<f64> {
+        Polygon::new(
+            LineString::from(vec![
+                coord! {x:0.0, y:0.0},
+                coord! {x:10.0, y:0.0},
+                coord! {x:10.0, y:10.0},
+                coord! {x:0.0, y:10.0},
+                coord! {x:0.0, y:0.0},
+            ]),
+            vec![],
+        )
+    }
 
     #[test]
     fn test_gpu_context_creation() {
         let _ctx = try_create_gpu_context();
+    }
+
+    #[test]
+    fn candidate_backend_parity() {
+        if get_gpu_context().is_none() {
+            return;
+        }
+        let poly = unit_square();
+        let candidates = vec![
+            RectCandidate::new(1.0, 1.0, 5.0, 5.0),
+            RectCandidate::new(-1.0, -1.0, 5.0, 5.0),
+        ];
+
+        let cpu = evaluate_candidates_with_backend(&poly, &candidates, WorkloadBackend::Cpu).unwrap();
+        let gpu = evaluate_candidates_with_backend(&poly, &candidates, WorkloadBackend::Gpu).unwrap();
+        assert_eq!(cpu.len(), gpu.len());
+        for (a, b) in cpu.iter().zip(gpu.iter()) {
+            assert_eq!(a.is_valid, b.is_valid);
+            assert!((a.area - b.area).abs() <= 1e-4);
+        }
+    }
+
+    #[test]
+    fn grid_mask_engine_parity() {
+        if get_gpu_context().is_none() {
+            return;
+        }
+        let poly = unit_square();
+        let cpu = evaluate_grid_mask_with_engine(&poly, 32, GridMaskEngine::Cpu).unwrap();
+        let gpu_batch = evaluate_grid_mask_with_engine(&poly, 32, GridMaskEngine::GpuBatch).unwrap();
+        let gpu_sdf = evaluate_grid_mask_with_engine(&poly, 32, GridMaskEngine::GpuSdf).unwrap();
+        assert_eq!(cpu, gpu_batch);
+        assert_eq!(cpu, gpu_sdf);
     }
 }

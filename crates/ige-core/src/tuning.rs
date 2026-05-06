@@ -7,21 +7,21 @@
 //! Ranges after each constant show reasonable min/max for OpenEvolve evolution.
 
 // -- LIR Oriented standard pipeline (lir_oriented/mod.rs) --
-pub const GRID_COARSE: usize = 51;
-pub const GRID_FINE: usize = 101;
-pub const TOP_K: usize = 16;
+pub const GRID_COARSE: usize = 32;
+pub const GRID_FINE: usize = 64;
+pub const TOP_K: usize = 10;
 pub const POLISH_HALFWIDTH: f64 = 3.0;
-pub const POLISH_XATOL: f64 = 0.1;
-pub const PRUNE_MARGIN: f64 = 0.001;
+pub const POLISH_XATOL: f64 = 0.02;
+pub const PRUNE_MARGIN: f64 = 0.92;
 pub const ANGLE_DELTA: f64 = 0.5;
-pub const TOP_TRIALS: usize = 4;
+pub const TOP_TRIALS: usize = 2;
 pub const CERT_EPS: f64 = 1e-7;
 pub const CERT_MAX_SHRINK: f64 = 0.20;
 
 // -- LIR Oriented parallel field (lir_oriented/parallel.rs) --------
-pub const FIELD_MIN_ANGLES: usize = 32;
-pub const FIELD_ANGLE_STEP: usize = 4;
-pub const FIELD_MAX_COORDS: usize = 512;
+pub const FIELD_MIN_ANGLES: usize = 45;
+pub const FIELD_ANGLE_STEP: usize = 5;
+pub const FIELD_MAX_COORDS: usize = 300;
 
 // -- SDF expansion (lir_oriented/expand.rs) -----------------------------
 pub const EXPAND_BINARY_STEPS: usize = 24;
@@ -36,4 +36,4 @@ pub const AA_SUBDIV_LEVELS_HIGH: usize = 4;
 pub const AA_SUBDIV_LEVELS_MED: usize = 2;
 pub const AA_SUBDIV_LEVELS_LOW: usize = 1;
 pub const AA_SMALL_VERTEX_CUTOFF: usize = 16;
-pub const AA_GRID_MAX_COORDS: usize = 512;
+pub const AA_GRID_MAX_COORDS: usize = 51200;

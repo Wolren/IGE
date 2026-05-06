@@ -89,6 +89,103 @@ pub fn edge_candidate_angles(
     result
 }
 
+/// Principal Component Analysis (PCA) to extract primary elongation axes.
+/// 
+/// Computes the covariance matrix of polygon vertices and extracts the
+/// primary (longest) and secondary axes via eigendecomposition of the 2x2 covariance.
+/// Returns angles (in degrees, 0-90) corresponding to these axes.
+pub fn pca_candidate_angles(poly: &geo_types::Polygon<f64>) -> Vec<f64> {
+    let coords: Vec<_> = poly
+        .exterior()
+        .0
+        .iter()
+        .chain(poly.interiors().iter().flat_map(|ring| ring.0.iter()))
+        .collect();
+
+    if coords.len() < 3 {
+        return vec![];
+    }
+
+    // Compute mean
+    let mean_x = coords.iter().map(|c| c.x).sum::<f64>() / coords.len() as f64;
+    let mean_y = coords.iter().map(|c| c.y).sum::<f64>() / coords.len() as f64;
+
+    // Compute covariance matrix (2x2)
+    // Cov = [ cov_xx  cov_xy ]
+    //       [ cov_xy  cov_yy ]
+    let mut cov_xx = 0.0;
+    let mut cov_yy = 0.0;
+    let mut cov_xy = 0.0;
+
+    for coord in &coords {
+        let dx = coord.x - mean_x;
+        let dy = coord.y - mean_y;
+        cov_xx += dx * dx;
+        cov_yy += dy * dy;
+        cov_xy += dx * dy;
+    }
+
+    let n = coords.len() as f64;
+    cov_xx /= n;
+    cov_yy /= n;
+    cov_xy /= n;
+
+    // For 2x2 symmetric matrix, eigenvalues via quadratic formula:
+    // det = cov_xx * cov_yy - cov_xy²
+    // trace = cov_xx + cov_yy
+    // λ = (trace ± sqrt(trace² - 4*det)) / 2
+    let trace = cov_xx + cov_yy;
+    let det = cov_xx * cov_yy - cov_xy * cov_xy;
+    let discriminant = trace * trace - 4.0 * det;
+
+    if discriminant < 0.0 {
+        return vec![];
+    }
+
+    let sqrt_disc = discriminant.sqrt();
+    let lambda_1 = (trace + sqrt_disc) / 2.0;
+    let lambda_2 = (trace - sqrt_disc) / 2.0;
+
+    let mut angles = Vec::new();
+
+    // Eigenvector for λ_1 (primary axis)
+    if lambda_1.abs() > 1e-12 {
+        let v1x = cov_xy;
+        let v1y = lambda_1 - cov_xx;
+        if v1x.abs() > 1e-12 || v1y.abs() > 1e-12 {
+            let angle1 = v1y.atan2(v1x).to_degrees().abs() % 90.0;
+            angles.push(angle1);
+        }
+    }
+
+    // Eigenvector for λ_2 (secondary axis)
+    if lambda_2.abs() > 1e-12 {
+        let v2x = cov_xy;
+        let v2y = lambda_2 - cov_xx;
+        if v2x.abs() > 1e-12 || v2y.abs() > 1e-12 {
+            let angle2 = v2y.atan2(v2x).to_degrees().abs() % 90.0;
+            angles.push(angle2);
+        }
+    }
+
+    // Add perpendicular (90 - angle) for secondary
+    if let Some(&a) = angles.last() {
+        let perp = (90.0 - a).abs() % 90.0;
+        if !angles.iter().any(|&ang| (ang - perp).abs() < 1.0) {
+            angles.push(perp);
+        }
+    }
+
+    // Ensure 45° is included if not already close
+    if !angles.iter().any(|&a| (a - 45.0).abs() < 2.0) {
+        angles.push(45.0);
+    }
+
+    angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    angles.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+    angles
+}
+
 pub fn upper_bound_area(
     hull: &geo_types::Polygon<f64>,
     angle_deg: f64,

@@ -37,8 +37,16 @@ pub struct LirOrientedOptions {
     pub top_k: usize,
     /// If true, return best-effort result even if certification fails.
     pub always_return: bool,
-    /// If true, use the parallel ray-shooting candidate-field solver.
+    /// If true, enable an additional local angle-polish pass (higher accuracy, slightly slower).
     pub use_parallel_field: bool,
+    /// If true, run an experimental simulated-annealing basin escape over (center, angle).
+    pub use_simulated_annealing: bool,
+    /// If true, use Principal Component Analysis to guide initial angle candidates.
+    pub use_pca_axes: bool,
+    /// If true, evaluate multiple center offsets per angle for better basin exploration.
+    pub use_multi_center: bool,
+    /// If true, use early stopping when top-k candidates stabilize.
+    pub use_early_stopping: bool,
     /// Half-width (degrees) for the Brent golden-section polish.
     pub polish_halwidth_deg: f64,
     /// Convergence tolerance for Brent polish (degrees).
@@ -73,6 +81,10 @@ impl Default for LirOrientedOptions {
             top_k: crate::tuning::TOP_K,
             always_return: true,
             use_parallel_field: false,
+            use_simulated_annealing: false,
+            use_pca_axes: false,
+            use_multi_center: false,
+            use_early_stopping: false,
             polish_halwidth_deg: crate::tuning::POLISH_HALFWIDTH,
             polish_xatol_deg: crate::tuning::POLISH_XATOL,
             prune_margin: crate::tuning::PRUNE_MARGIN,
@@ -181,6 +193,10 @@ pub fn worker_process_feature(
         top_k,
         always_return,
         use_parallel_field: false,
+        use_simulated_annealing: false,
+        use_pca_axes: false,
+        use_multi_center: false,
+        use_early_stopping: false,
         polish_halwidth_deg: crate::tuning::POLISH_HALFWIDTH,
         polish_xatol_deg: crate::tuning::POLISH_XATOL,
         prune_margin: crate::tuning::PRUNE_MARGIN,

@@ -89,6 +89,9 @@ fn polygon_sdf(px: f32, py: f32) -> f32 {
 @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
+    if idx >= arrayLength(&rects) || idx >= arrayLength(&outputs) {
+        return;
+    }
     let r = rects[idx];
 
     // 4 corners

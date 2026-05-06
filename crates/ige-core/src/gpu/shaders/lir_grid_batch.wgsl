@@ -26,6 +26,12 @@ struct PolyHeader {
 @group(0) @binding(3) var<storage, read_write> grid_mask: array<u32>;
 
 fn point_in_poly(px: f32, py: f32, v0: u32, vn: u32) -> bool {
+    if vn <= v0 + 1u {
+        return false;
+    }
+    if vn > arrayLength(&poly_verts) {
+        return false;
+    }
     var inside = false;
     var j = vn - 1u;
     for (var i = v0; i < vn; i++) {
@@ -51,6 +57,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let h = poly_headers[poly_idx];
     if gid.x >= uniforms.max_grid_steps || gid.y >= uniforms.max_grid_steps { return; }
+    if h.vertex_count < 3u { return; }
 
     let span_x = h.max_x - h.min_x;
     let span_y = h.max_y - h.min_y;
@@ -63,5 +70,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let out_idx = poly_idx * uniforms.max_grid_steps * uniforms.max_grid_steps
                 + gid.y * uniforms.max_grid_steps + gid.x;
+    if out_idx >= arrayLength(&grid_mask) { return; }
     grid_mask[out_idx] = select(0u, 1u, inside);
 }

@@ -165,11 +165,15 @@ pub struct PyLirOrientedResult {
     pub angle_deg: f64,
 }
 
-#[pyfunction(signature = (exterior, max_aspect_ratio=None, use_parallel_field=false))]
+#[pyfunction(signature = (exterior, max_aspect_ratio=None, use_parallel_field=false, use_simulated_annealing=false, use_pca_axes=false, use_multi_center=false, use_early_stopping=false))]
 pub fn solve_lir_oriented_py(
     exterior: Vec<(f64, f64)>,
     max_aspect_ratio: Option<f64>,
     use_parallel_field: bool,
+    use_simulated_annealing: bool,
+    use_pca_axes: bool,
+    use_multi_center: bool,
+    use_early_stopping: bool,
 ) -> PyResult<PyLirOrientedResult> {
     if exterior.len() < 3 {
         return Err(PyValueError::new_err("polygon exterior must contain at least 3 points"));
@@ -187,6 +191,10 @@ pub fn solve_lir_oriented_py(
         opts.max_ratio = ratio;
     }
     opts.use_parallel_field = use_parallel_field;
+    opts.use_simulated_annealing = use_simulated_annealing;
+    opts.use_pca_axes = use_pca_axes;
+    opts.use_multi_center = use_multi_center;
+    opts.use_early_stopping = use_early_stopping;
 
     let result = solve_lir_oriented(&polygon, &opts)
         .map_err(|e| PyValueError::new_err(format!("solve failed: {e}")))?;
@@ -203,6 +211,27 @@ pub fn solve_lir_oriented_py(
         area: result.area,
         angle_deg: result.angle_deg,
     })
+}
+
+#[pyfunction(signature = (exterior, max_aspect_ratio=None, use_parallel_field=false, use_simulated_annealing=false, use_pca_axes=false, use_multi_center=false, use_early_stopping=false))]
+pub fn solve_bcrs_py(
+    exterior: Vec<(f64, f64)>,
+    max_aspect_ratio: Option<f64>,
+    use_parallel_field: bool,
+    use_simulated_annealing: bool,
+    use_pca_axes: bool,
+    use_multi_center: bool,
+    use_early_stopping: bool,
+) -> PyResult<PyLirOrientedResult> {
+    solve_lir_oriented_py(
+        exterior,
+        max_aspect_ratio,
+        use_parallel_field,
+        use_simulated_annealing,
+        use_pca_axes,
+        use_multi_center,
+        use_early_stopping,
+    )
 }
 
 // ─── MIC solver ─────────────────────────────────────────────────────────────
@@ -301,6 +330,7 @@ fn _native(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
 
     m.add_class::<PyLirOrientedResult>()?;
     m.add_function(wrap_pyfunction!(solve_lir_oriented_py, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_bcrs_py, m)?)?;
 
     m.add_class::<PyMicResult>()?;
     m.add_function(wrap_pyfunction!(solve_mic_py, m)?)?;

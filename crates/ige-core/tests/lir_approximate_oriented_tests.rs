@@ -19,7 +19,8 @@ fn main() {
         vec![],
     );
 
-    let std_opts = LirOrientedOptions::default();
+    let mut std_opts = LirOrientedOptions::default();
+    std_opts.use_parallel_field = false;
     let par_opts = LirOrientedOptions {
         use_parallel_field: true,
         ..Default::default()
@@ -111,7 +112,8 @@ fn parallel_quality_on_representative_shapes() {
 }
 
 fn compare_parallel_quality(poly: &Polygon<f64>, min_ratio: f64) {
-    let std_opts = LirOrientedOptions::default();
+    let mut std_opts = LirOrientedOptions::default();
+    std_opts.use_parallel_field = false;
     let par_opts = LirOrientedOptions {
         use_parallel_field: true,
         ..Default::default()

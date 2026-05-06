@@ -5,17 +5,127 @@
 //! Usage:
 //!   cargo run --package ige-core --example visualize
 //!   cargo run --package ige-core --example visualize -- --baseline
+//!   cargo run --package ige-core --example visualize -- --baseline --axis-solver vertex
+//!   cargo run --package ige-core --example visualize -- --baseline --axis-solver exact
+//!   cargo run --package ige-core --example visualize -- --baseline --axis-solver grid --mask-backend cpu
+//!   cargo run --package ige-core --example visualize --features gpu -- --baseline --axis-solver grid --mask-backend gpu-grid
+//!   cargo run --package ige-core --example visualize -- --parallel   # oriented with extra local angle polish
+//!   cargo run --package ige-core --example visualize -- --sa         # oriented with simulated annealing rescue
 //!   cargo run --package ige-core --example visualize -- --limit 50
 //!   cargo run --package ige-core --example visualize --features geos -- --mic-compare --real-only --file crates/ige-core/tests/real_world_data/realworld.geojson
 
 use geo::Area;
 use geo_types::{Coord, LineString, Polygon};
+use ige_core::shared::Rectangle;
+use ige_core::solvers::lir::axis_aligned::{solve_axis_exact, solve_vertex_grid};
 use ige_core::solvers::lir::oriented::{solve_lir_oriented, LirOrientedOptions};
 use ige_core::solvers::mic::{maximum_inscribed_circle, MicEngine, MicOptions, MicResult, RobustMode};
-use ige_core::{solve_axis_aligned, AxisAlignedOptions};
+use ige_core::{solve_axis_rect_grid_with_backend, AxisAlignedOptions, MaskBackend};
 use rayon::prelude::*;
 use serde_json::Value;
 use std::fs;
+
+#[cfg(feature = "gpu")]
+fn parse_mask_backend(args: &[String]) -> MaskBackend {
+    let value = args
+        .iter()
+        .position(|a| a == "--mask-backend")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+        .unwrap_or("auto");
+    match value {
+        "cpu" => MaskBackend::Cpu,
+        "gpu-sdf" => MaskBackend::GpuSdf,
+        "gpu-grid" => MaskBackend::GpuGridBatch,
+        "auto" => MaskBackend::Auto,
+        _ => {
+            eprintln!("Unknown --mask-backend '{value}', using auto");
+            MaskBackend::Auto
+        }
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn parse_mask_backend(args: &[String]) -> MaskBackend {
+    if let Some(value) = args
+        .iter()
+        .position(|a| a == "--mask-backend")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+    {
+        if value != "cpu" && value != "auto" {
+            eprintln!("--mask-backend={value} requires --features gpu; using cpu");
+        }
+    }
+    MaskBackend::Cpu
+}
+
+#[cfg(feature = "gpu")]
+fn mask_backend_name(backend: MaskBackend) -> &'static str {
+    match backend {
+        MaskBackend::Cpu => "cpu",
+        MaskBackend::GpuSdf => "gpu-sdf",
+        MaskBackend::GpuGridBatch => "gpu-grid",
+        MaskBackend::Auto => "auto",
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn mask_backend_name(_backend: MaskBackend) -> &'static str {
+    "cpu"
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AxisCliSolver {
+    Vertex,
+    Exact,
+    Grid,
+}
+
+fn parse_axis_solver(args: &[String]) -> AxisCliSolver {
+    // Backward compatibility: old flag implied grid baseline mode.
+    if args.contains(&"--baseline-grid".to_string()) {
+        return AxisCliSolver::Grid;
+    }
+
+    let value = args
+        .iter()
+        .position(|a| a == "--axis-solver")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+        .unwrap_or("vertex");
+
+    match value {
+        "vertex" | "vertex_grid" => AxisCliSolver::Vertex,
+        "exact" => AxisCliSolver::Exact,
+        "grid" => AxisCliSolver::Grid,
+        _ => {
+            eprintln!("Unknown --axis-solver '{value}', using vertex");
+            AxisCliSolver::Vertex
+        }
+    }
+}
+
+fn axis_solver_name(solver: AxisCliSolver) -> &'static str {
+    match solver {
+        AxisCliSolver::Vertex => "vertex",
+        AxisCliSolver::Exact => "exact",
+        AxisCliSolver::Grid => "grid",
+    }
+}
+
+fn rect_to_polygon(rect: Rectangle) -> Polygon<f64> {
+    Polygon::new(
+        LineString::from(vec![
+            Coord { x: rect.x_min, y: rect.y_min },
+            Coord { x: rect.x_max, y: rect.y_min },
+            Coord { x: rect.x_max, y: rect.y_max },
+            Coord { x: rect.x_min, y: rect.y_max },
+            Coord { x: rect.x_min, y: rect.y_min },
+        ]),
+        vec![],
+    )
+}
 
 fn parse_ring(value: &Value) -> Option<Vec<Coord<f64>>> {
     let ring = value.as_array()?;
@@ -388,6 +498,10 @@ fn main() {
     let use_mic_compare = args.contains(&"--mic-compare".to_string());
     let real_only = args.contains(&"--real-only".to_string());
     let use_parallel = args.contains(&"--parallel".to_string());
+    let use_sa = args.contains(&"--sa".to_string());
+    let use_pca_axes = args.contains(&"--pca-axes".to_string());
+    let use_multi_center = args.contains(&"--multi-center".to_string());
+    let use_early_stopping = args.contains(&"--early-stop".to_string());
     let use_approx_oriented = !args.contains(&"--baseline".to_string());
     let use_json = args.contains(&"--json".to_string());
     let limit = args.iter()
@@ -398,15 +512,40 @@ fn main() {
         .position(|a| a == "--file")
         .and_then(|i| args.get(i + 1))
         .map(|s| s.as_str());
+    let axis_solver = parse_axis_solver(&args);
+    let mask_backend = parse_mask_backend(&args);
+    if !use_approx_oriented
+        && !use_mic_compare
+        && axis_solver != AxisCliSolver::Grid
+        && args.iter().any(|a| a == "--mask-backend")
+    {
+        eprintln!("--mask-backend is ignored unless --axis-solver grid is selected");
+    }
+    if !use_approx_oriented && use_sa {
+        eprintln!("--sa is ignored in baseline axis-aligned mode");
+    }
 
     let algo_name = if use_mic_compare {
-        "MIC exact vs GEOS"
+        "MIC exact vs GEOS".to_string()
+    } else if use_sa && use_parallel {
+        "LIR Approx Oriented + SA + local angle polish".to_string()
+    } else if use_sa {
+        "LIR Approx Oriented + SA rescue".to_string()
     } else if use_parallel {
-        "LIR Approx Oriented parallel"
+        "LIR Approx Oriented + local angle polish".to_string()
     } else if use_approx_oriented {
-        "LIR Approx Oriented"
+        "LIR Approx Oriented".to_string()
     } else {
-        "axis-aligned"
+        match axis_solver {
+            AxisCliSolver::Grid => {
+                format!(
+                    "axis-aligned (solver={}, mask={})",
+                    axis_solver_name(axis_solver),
+                    mask_backend_name(mask_backend)
+                )
+            }
+            _ => format!("axis-aligned (solver={})", axis_solver_name(axis_solver)),
+        }
     };
 
     let real = load_polygons_from(file_path);
@@ -634,9 +773,13 @@ svg{{width:100%;height:220px;background:#0f0f23;border-radius:4px}}
             let start = std::time::Instant::now();
             let poly_area = poly.unsigned_area();
 
-            let (rp, ra, ang, be) = if use_parallel {
+            let (rp, ra, ang, be) = if use_parallel || use_sa || use_pca_axes || use_multi_center || use_early_stopping {
                 let mut opts = LirOrientedOptions::default();
-                opts.use_parallel_field = true;
+                opts.use_parallel_field = use_parallel;
+                opts.use_simulated_annealing = use_sa;
+                opts.use_pca_axes = use_pca_axes;
+                opts.use_multi_center = use_multi_center;
+                opts.use_early_stopping = use_early_stopping;
                 match solve_lir_oriented(poly, &opts) {
                     Ok(r) => (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
                     Err(_) => (None, 0.0, 0.0, false),
@@ -648,18 +791,43 @@ svg{{width:100%;height:220px;background:#0f0f23;border-radius:4px}}
                 }
             } else {
                 let opts = AxisAlignedOptions::default();
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solve_axis_aligned(poly, &opts))) {
-                    Ok(Some(rect)) => {
-                        let rp = Polygon::new(LineString::from(vec![
-                            Coord { x: rect.x_min, y: rect.y_min },
-                            Coord { x: rect.x_max, y: rect.y_min },
-                            Coord { x: rect.x_max, y: rect.y_max },
-                            Coord { x: rect.x_min, y: rect.y_max },
-                            Coord { x: rect.x_min, y: rect.y_min },
-                        ]), vec![]);
-                        (Some(rp), rect.area(), 0.0, false)
+                match axis_solver {
+                    AxisCliSolver::Vertex => {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solve_vertex_grid(poly, &opts))) {
+                            Ok(Some(rect)) => {
+                                let area = rect.area();
+                                (Some(rect_to_polygon(rect)), area, 0.0, false)
+                            }
+                            _ => (None, 0.0, 0.0, false),
+                        }
                     }
-                    _ => (None, 0.0, 0.0, false),
+                    AxisCliSolver::Exact => {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| solve_axis_exact(poly, &opts))) {
+                            Ok(Some(rect)) => {
+                                let area = rect.area();
+                                (Some(rect_to_polygon(rect)), area, 0.0, false)
+                            }
+                            _ => (None, 0.0, 0.0, false),
+                        }
+                    }
+                    AxisCliSolver::Grid => {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            solve_axis_rect_grid_with_backend(poly, opts.max_grid, opts.max_ratio, mask_backend)
+                        })) {
+                            Ok(Some((x0, y0, x1, y1, _))) => {
+                                let rp = Polygon::new(LineString::from(vec![
+                                    Coord { x: x0, y: y0 },
+                                    Coord { x: x1, y: y0 },
+                                    Coord { x: x1, y: y1 },
+                                    Coord { x: x0, y: y1 },
+                                    Coord { x: x0, y: y0 },
+                                ]), vec![]);
+                                let area = (x1 - x0) * (y1 - y0);
+                                (Some(rp), area, 0.0, false)
+                            }
+                            _ => (None, 0.0, 0.0, false),
+                        }
+                    }
                 }
             };
             let ms = start.elapsed().as_secs_f64() * 1000.0;

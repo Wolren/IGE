@@ -9,6 +9,30 @@ use geo_types::{Point, Polygon};
 
 use super::histogram::{lrih, lrih_vp};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaskBackend {
+    Cpu,
+    #[cfg(feature = "gpu")]
+    GpuSdf,
+    #[cfg(feature = "gpu")]
+    GpuGridBatch,
+    #[cfg(feature = "gpu")]
+    Auto,
+}
+
+impl Default for MaskBackend {
+    fn default() -> Self {
+        #[cfg(feature = "gpu")]
+        {
+            Self::Auto
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            Self::Cpu
+        }
+    }
+}
+
 // --- Uniform-grid solver (coarse / Brent) ---------------------------------
 
 /// Solve the largest axis-aligned rectangle using a uniform grid of `grid_steps`
@@ -17,6 +41,15 @@ pub fn solve_axis_rect_grid(
     poly: &Polygon<f64>,
     grid_steps: usize,
     max_ratio: f64,
+) -> Option<(f64, f64, f64, f64, f64)> {
+    solve_axis_rect_grid_with_backend(poly, grid_steps, max_ratio, MaskBackend::default())
+}
+
+pub fn solve_axis_rect_grid_with_backend(
+    poly: &Polygon<f64>,
+    grid_steps: usize,
+    max_ratio: f64,
+    backend: MaskBackend,
 ) -> Option<(f64, f64, f64, f64, f64)> {
     let bb = poly.bounding_rect()?;
     let minx = bb.min().x;
@@ -41,7 +74,7 @@ pub fn solve_axis_rect_grid(
 
     // Build point-inside mask at each grid-point
     let mut mask = vec![false; grid_steps * grid_steps];
-    build_uniform_mask(poly, &xs, &ys, &mut mask, grid_steps);
+    build_uniform_mask(poly, &xs, &ys, &mut mask, grid_steps, backend);
 
     let mut heights = vec![0usize; grid_steps];
     let mut best: Option<(f64, f64, f64, f64, f64)> = None;
@@ -84,6 +117,15 @@ pub fn solve_axis_rect_bcrs(
     seed_bounds: Option<(f64, f64, f64, f64)>,
     max_ratio: f64,
 ) -> Option<(f64, f64, f64, f64, f64)> {
+    solve_axis_rect_bcrs_with_backend(rot_poly, seed_bounds, max_ratio, MaskBackend::default())
+}
+
+pub fn solve_axis_rect_bcrs_with_backend(
+    rot_poly: &Polygon<f64>,
+    seed_bounds: Option<(f64, f64, f64, f64)>,
+    max_ratio: f64,
+    backend: MaskBackend,
+) -> Option<(f64, f64, f64, f64, f64)> {
     // Collect vertex coordinates
     let mut xs_raw: Vec<f64> = rot_poly.exterior().0.iter().map(|c| c.x).collect();
     let mut ys_raw: Vec<f64> = rot_poly.exterior().0.iter().map(|c| c.y).collect();
@@ -123,7 +165,7 @@ pub fn solve_axis_rect_bcrs(
 
     // Cell-centre mask
     let mut mask = vec![false; n_cols * n_rows];
-    build_bcrs_mask(rot_poly, &xs_raw, &ys_raw, &mut mask, n_cols, n_rows);
+    build_bcrs_mask(rot_poly, &xs_raw, &ys_raw, &mut mask, n_cols, n_rows, backend);
 
     let mut heights = vec![0usize; n_cols];
     let mut best: Option<(f64, f64, f64, f64, f64)> = None;
@@ -188,11 +230,12 @@ fn scanline_mask(poly: &Polygon<f64>, xs: &[f64], ys: &[f64], mask: &mut [bool],
                 continue;
             }
             let (lower, upper) = if a.y < b.y { (a, b) } else { (b, a) };
+            let span_y = upper.y - lower.y;
             edges.push(ActiveEdge {
                 y_min: lower.y,
                 y_max: upper.y,
                 x: lower.x,
-                dx_dy: (upper.x - lower.x) / dy,
+                dx_dy: (upper.x - lower.x) / span_y,
             });
         }
     }
@@ -261,57 +304,114 @@ fn fallback_to_cpu_bcrs_mask(poly: &Polygon<f64>, xs: &[f64], ys: &[f64], mask: 
 }
 
 #[cfg(feature = "gpu")]
-fn gpu_build_mask(poly: &Polygon<f64>, points: &[(f64, f64)], mask: &mut [bool], n_cols: usize) {
-    // Fall back to CPU for high-vertex-count polygons (f32 precision loss)
-    let n_verts = poly.exterior().0.len().saturating_sub(1);
-    if n_verts > 200 {
-        return;
-    }
+fn gpu_build_mask_sdf(poly: &Polygon<f64>, points: &[(f64, f64)], mask: &mut [bool], n_cols: usize) -> bool {
     if let Some(gpu) = crate::gpu::get_gpu_context() {
         let gpu_rects: Vec<_> = points.iter().map(|&(x, y)| (x, y, x, y)).collect();
-            if let Ok(sdf_results) = gpu.evaluate_rect_sdf_batch(poly, &gpu_rects) {
-                let eps: f32 = 1e-5; // f32 tolerance for boundary precision
-                for (i, &val) in sdf_results.iter().enumerate() {
-                    let r = i / n_cols;
-                    let c = i % n_cols;
-                    mask[r * n_cols + c] = val <= eps;
-                }
-                return;
+        if let Ok(sdf_results) = gpu.evaluate_rect_sdf_batch(poly, &gpu_rects) {
+            let eps = crate::tuning::CONTAIN_BOUNDARY_EPS as f32;
+            for (i, &val) in sdf_results.iter().enumerate() {
+                let r = i / n_cols;
+                let c = i % n_cols;
+                mask[r * n_cols + c] = val <= eps;
             }
+            return true;
+        }
     }
-    // GPU failed -- fall back to CPU (handled at call site)
+    false
+}
+
+#[cfg(feature = "gpu")]
+fn gpu_build_uniform_mask_batch(poly: &Polygon<f64>, mask: &mut [bool], grid_steps: usize) -> bool {
+    let Some(gpu) = crate::gpu::get_gpu_context() else {
+        return false;
+    };
+    let Ok(gpu_mask) = gpu.evaluate_grid_batch(&[poly], grid_steps as u32) else {
+        return false;
+    };
+    if gpu_mask.len() != mask.len() {
+        return false;
+    }
+    for (dst, src) in mask.iter_mut().zip(gpu_mask.into_iter()) {
+        *dst = src != 0;
+    }
+    true
 }
 
 // Replace uniform grid mask with GPU-accelerated version
-fn build_uniform_mask(poly: &Polygon<f64>, xs: &[f64], ys: &[f64], mask: &mut [bool], grid_steps: usize) {
+fn build_uniform_mask(
+    poly: &Polygon<f64>,
+    xs: &[f64],
+    ys: &[f64],
+    mask: &mut [bool],
+    grid_steps: usize,
+    backend: MaskBackend,
+) {
+    #[cfg(not(feature = "gpu"))]
+    let _ = backend;
     #[cfg(feature = "gpu")]
     {
-        let points: Vec<_> = (0..grid_steps)
-            .flat_map(|r| (0..grid_steps).map(move |c| (xs[c], ys[r])))
-            .collect();
-        gpu_build_mask(poly, &points, mask, grid_steps);
-        // Check if GPU populated the mask
-        let any_true = mask.iter().any(|&v| v);
-        if any_true { return; }
+        match backend {
+            MaskBackend::Cpu => {}
+            MaskBackend::GpuGridBatch => {
+                if gpu_build_uniform_mask_batch(poly, mask, grid_steps) {
+                    return;
+                }
+            }
+            MaskBackend::GpuSdf => {
+                let points: Vec<_> = (0..grid_steps)
+                    .flat_map(|r| (0..grid_steps).map(move |c| (xs[c], ys[r])))
+                    .collect();
+                if gpu_build_mask_sdf(poly, &points, mask, grid_steps) {
+                    return;
+                }
+            }
+            MaskBackend::Auto => {
+                if gpu_build_uniform_mask_batch(poly, mask, grid_steps) {
+                    return;
+                }
+                let points: Vec<_> = (0..grid_steps)
+                    .flat_map(|r| (0..grid_steps).map(move |c| (xs[c], ys[r])))
+                    .collect();
+                if gpu_build_mask_sdf(poly, &points, mask, grid_steps) {
+                    return;
+                }
+            }
+        }
     }
     fallback_to_cpu_mask(poly, xs, ys, mask, grid_steps);
 }
 
-fn build_bcrs_mask(poly: &Polygon<f64>, xs_bounds: &[f64], ys_bounds: &[f64], mask: &mut [bool], n_cols: usize, n_rows: usize) {
+fn build_bcrs_mask(
+    poly: &Polygon<f64>,
+    xs_bounds: &[f64],
+    ys_bounds: &[f64],
+    mask: &mut [bool],
+    n_cols: usize,
+    n_rows: usize,
+    backend: MaskBackend,
+) {
+    #[cfg(not(feature = "gpu"))]
+    let _ = backend;
     #[cfg(feature = "gpu")]
     {
-        let points: Vec<_> = (0..n_rows)
-            .flat_map(|r| {
-                let cy = (ys_bounds[r] + ys_bounds[r + 1]) * 0.5;
-                (0..n_cols).map(move |c| {
-                    let cx = (xs_bounds[c] + xs_bounds[c + 1]) * 0.5;
-                    (cx, cy)
-                })
-            })
-            .collect();
-        gpu_build_mask(poly, &points, mask, n_cols);
-        let any_true = mask.iter().any(|&v| v);
-        if any_true { return; }
+        match backend {
+            MaskBackend::Cpu => {}
+            MaskBackend::GpuGridBatch => {}
+            MaskBackend::GpuSdf | MaskBackend::Auto => {
+                let points: Vec<_> = (0..n_rows)
+                    .flat_map(|r| {
+                        let cy = (ys_bounds[r] + ys_bounds[r + 1]) * 0.5;
+                        (0..n_cols).map(move |c| {
+                            let cx = (xs_bounds[c] + xs_bounds[c + 1]) * 0.5;
+                            (cx, cy)
+                        })
+                    })
+                    .collect();
+                if gpu_build_mask_sdf(poly, &points, mask, n_cols) {
+                    return;
+                }
+            }
+        }
     }
     fallback_to_cpu_bcrs_mask(poly, xs_bounds, ys_bounds, mask, n_cols, n_rows);
 }
@@ -354,5 +454,21 @@ mod tests {
         assert!((area - 100.0).abs() < 0.01, "area={area}");
         assert!((x0 - 0.0).abs() < 0.01);
         assert!((x1 - 10.0).abs() < 0.01);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn backend_parity_on_square_grid_solver() {
+        if crate::gpu::get_gpu_context().is_none() {
+            return;
+        }
+        let poly = unit_square();
+        let cpu = solve_axis_rect_grid_with_backend(&poly, 64, 0.0, MaskBackend::Cpu).unwrap();
+        let gpu_sdf = solve_axis_rect_grid_with_backend(&poly, 64, 0.0, MaskBackend::GpuSdf).unwrap();
+        let gpu_grid = solve_axis_rect_grid_with_backend(&poly, 64, 0.0, MaskBackend::GpuGridBatch).unwrap();
+
+        let cpu_area = cpu.4;
+        assert!((gpu_sdf.4 - cpu_area).abs() <= 1e-3, "gpu_sdf area mismatch: {} vs {}", gpu_sdf.4, cpu_area);
+        assert!((gpu_grid.4 - cpu_area).abs() <= 1e-3, "gpu_grid area mismatch: {} vs {}", gpu_grid.4, cpu_area);
     }
 }

@@ -29,10 +29,15 @@ typedef struct {
  * @brief Oriented solver configuration options
  */
 typedef struct {
-    double rotation_degrees;   ///< Rotation angle (0 = axis-aligned)
-    int prefer_gpu;           ///< Prefer GPU when available (1=yes, 0=no)
-    int force_cpu;            ///< Force CPU solver (1=yes, 0=no)
-    double max_aspect_ratio;  ///< Maximum aspect ratio (0 = unlimited)
+    double rotation_degrees;        ///< Rotation angle (0 = axis-aligned)
+    int prefer_gpu;                ///< Prefer GPU when available (1=yes, 0=no)
+    int force_cpu;                 ///< Force CPU solver (1=yes, 0=no)
+    double max_aspect_ratio;       ///< Maximum aspect ratio (0 = unlimited)
+    int use_parallel_field;        ///< Enable parallel candidate-field refinement (1=yes, 0=no)
+    int use_simulated_annealing;   ///< Enable SA basin-escape search (1=yes, 0=no)
+    int use_pca_axes;              ///< Enable PCA-guided angle candidates (1=yes, 0=no)
+    int use_multi_center;          ///< Enable multi-center evaluation per angle (1=yes, 0=no)
+    int use_early_stopping;        ///< Enable early stopping when top-k stabilizes (1=yes, 0=no)
 } IgeOptions;
 
 /**

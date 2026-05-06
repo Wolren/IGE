@@ -50,6 +50,9 @@ fn point_in_polygon(px: f32, py: f32) -> bool {
 @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
+    if idx >= arrayLength(&candidates) || idx >= arrayLength(&results) {
+        return;
+    }
     let cand = candidates[idx];
     
     // Check if all corners are inside polygon

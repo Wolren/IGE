@@ -75,9 +75,24 @@ fn benchmark_lir_oriented_parallel(c: &mut Criterion) {
     });
 }
 
+fn benchmark_lir_oriented_sa(c: &mut Criterion) {
+    let shapes = test_shapes();
+    let mut opts = LirOrientedOptions::default();
+    opts.use_simulated_annealing = true;
+
+    c.bench_function("lir_oriented_sa_batch", |b| {
+        b.iter(|| {
+            for poly in &shapes {
+                let _ = solve_lir_oriented(poly, &opts);
+            }
+        });
+    });
+}
+
 criterion_group!(
     benches,
     benchmark_lir_oriented_standard,
-    benchmark_lir_oriented_parallel
+    benchmark_lir_oriented_parallel,
+    benchmark_lir_oriented_sa
 );
 criterion_main!(benches);

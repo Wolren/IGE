@@ -13,7 +13,13 @@ pub mod containment;
 pub use vertex_grid::{solve_vertex_grid, AxisAlignedOptions, detect_polygon_type};
 pub use exact::solve_axis_exact;
 pub use histogram::{lrih, lrih_vp};
-pub use grid::{solve_axis_rect_grid, solve_axis_rect_bcrs as solve_axis_rect_fine};
+pub use grid::{
+    MaskBackend,
+    solve_axis_rect_bcrs as solve_axis_rect_fine,
+    solve_axis_rect_bcrs_with_backend,
+    solve_axis_rect_grid,
+    solve_axis_rect_grid_with_backend,
+};
 pub use sdf::{best_effort_shrink, certify_rect, polygon_sdf, rect_sdf_max};
 pub use containment::{rect_fully_contained, contract_rect_to_boundary};
 
