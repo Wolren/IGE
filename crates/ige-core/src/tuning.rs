@@ -7,9 +7,9 @@
 //! Ranges after each constant show reasonable min/max for OpenEvolve evolution.
 
 // -- LIR Oriented standard pipeline (lir_oriented/mod.rs) --
-pub const GRID_COARSE: usize = 400;
-pub const GRID_FINE: usize = 300;
-pub const TOP_K: usize = 20;
+pub const GRID_COARSE: usize = 32;
+pub const GRID_FINE: usize = 64;
+pub const TOP_K: usize = 1;
 pub const POLISH_HALFWIDTH: f64 = 3.0;
 pub const POLISH_XATOL: f64 = 0.02;
 pub const PRUNE_MARGIN: f64 = 0.92;
@@ -21,7 +21,7 @@ pub const CERT_MAX_SHRINK: f64 = 0.20;
 // -- LIR Oriented parallel field (lir_oriented/parallel.rs) --------
 pub const FIELD_MIN_ANGLES: usize = 45;
 pub const FIELD_ANGLE_STEP: usize = 5;
-pub const FIELD_MAX_COORDS: usize = 3000;
+pub const FIELD_MAX_COORDS: usize = 300;
 
 // -- SDF expansion (lir_oriented/expand.rs) -----------------------------
 pub const EXPAND_BINARY_STEPS: usize = 24;

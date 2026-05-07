@@ -199,7 +199,7 @@ fn build_mask_parallel(
 
 fn generate_angles(poly: &Polygon<f64>, options: &LirOrientedOptions) -> Vec<f64> {
     let mut angles = edge_candidate_angles(poly, 4.0, 12);
-    
+
     // If PCA is enabled, add principal component analysis angles
     if options.use_pca_axes {
         let pca_angles = super::candidates::pca_candidate_angles(poly);
@@ -209,7 +209,7 @@ fn generate_angles(poly: &Polygon<f64>, options: &LirOrientedOptions) -> Vec<f64
             }
         }
     }
-    
+
     if angles.len() < options.field_min_angles {
         let step = options.field_angle_step.max(1);
         for step_deg in (step..90).step_by(step) {
@@ -515,7 +515,7 @@ fn candidate_from_multi_centers(
     let centroid: Point<f64> = poly.centroid()?.into();
     let bb = poly.bounding_rect()?;
     let diag = ((bb.max().x - bb.min().x).powi(2) + (bb.max().y - bb.min().y).powi(2)).sqrt();
-    
+
     // Try centers: centroid + small offsets in cardinal directions
     let offset_dist = diag * 0.05;  // 5% of diagonal
     let center_offsets = vec![
@@ -525,9 +525,9 @@ fn candidate_from_multi_centers(
         (0.0, offset_dist),   // up
         (0.0, -offset_dist),  // down
     ];
-    
+
     let mut best: Option<(Candidate, f64)> = None;
-    
+
     for (dx, dy) in center_offsets {
         let center = Point::new(centroid.x() + dx, centroid.y() + dy);
         if let Some((cand, score)) = candidate_from_cross_rays(poly, center, angle_deg, max_ratio, min_ratio) {
@@ -536,7 +536,7 @@ fn candidate_from_multi_centers(
             }
         }
     }
-    
+
     best
 }
 
@@ -589,7 +589,7 @@ fn run_simulated_annealing_candidates(
 
             // Propose new angle
             let proposal_angle = wrap_angle_90(current_angle + rng.normal() * sigma_a);
-            
+
             // Evaluate proposal using coarse evaluate (actual area landscape)
             let Some(proposal_cand) = coarse_evaluate_angle(poly, proposal_angle, coarse_steps, max_ratio, min_ratio) else {
                 continue;
@@ -603,7 +603,7 @@ fn run_simulated_annealing_candidates(
                 let denom = (current_cand.area.abs().max(1e-9)) * temp;
                 ((proposal_cand.area - current_cand.area) / denom).exp() > rng.uniform()
             };
-            
+
             if accept {
                 current_angle = proposal_angle;
                 current_cand = proposal_cand;
@@ -941,7 +941,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
     let mut top_areas: Vec<f64> = Vec::new();
     let mut evaluated_angles: Vec<f64> = Vec::new();
     let mut candidates: Vec<Candidate> = Vec::new();
-    
+
     // For early stopping: track top-k stability
     let mut stable_count = 0usize;
     let mut prev_top_hash = String::new();
@@ -961,14 +961,14 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
         }
 
         evaluated_angles.push(angle);
-        
+
         let c = if options.use_multi_center {
             candidate_from_multi_centers(&poly, angle, options.max_ratio, options.min_ratio)
                 .map(|(cand, _)| cand)
         } else {
             coarse_evaluate_angle(&poly, angle, coarse_steps, options.max_ratio, options.min_ratio)
         };
-        
+
         if let Some(c) = c {
             let area = c.area;
             if top_areas.len() < top_needed {
@@ -987,13 +987,13 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                 }
             }
             candidates.push(c);
-            
+
             // Early stopping: check if top-k has stabilized
             if options.use_early_stopping && top_areas.len() >= top_needed {
                 let mut sorted_tops = top_areas.clone();
                 sorted_tops.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
                 let hash = format!("{:?}", sorted_tops);
-                
+
                 if hash == prev_top_hash {
                     stable_count += 1;
                     if stable_count >= early_stop_threshold {
@@ -1237,6 +1237,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                     &poly,
                     test_angle,
                     options,
+                    best.area,
                 );
 
                 let mut local_best: Option<LirOrientedResult> = None;

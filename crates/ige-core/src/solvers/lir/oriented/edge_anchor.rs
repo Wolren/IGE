@@ -363,37 +363,25 @@ fn rect_covers(poly: &Polygon<f64>, x0: f64, y0: f64, x1: f64, y1: f64) -> bool 
 }
 
 fn compute_support_score(poly: &Polygon<f64>, x0: f64, y0: f64, x1: f64, y1: f64) -> f64 {
-    let mut sides_near_boundary = 0.0;
-
     let bbox = match poly.bounding_rect() {
         Some(b) => b,
         None => return 0.0,
     };
 
-    if (x0 - bbox.min().x).abs() < 1e-6 {
-        sides_near_boundary += 1.0;
-    }
-    if (x1 - bbox.max().x).abs() < 1e-6 {
-        sides_near_boundary += 1.0;
-    }
-    if (y0 - bbox.min().y).abs() < 1e-6 {
-        sides_near_boundary += 1.0;
-    }
-    if (y1 - bbox.max().y).abs() < 1e-6 {
-        sides_near_boundary += 1.0;
-    }
+    let diag = ((bbox.max().x - bbox.min().x).powi(2) + (bbox.max().y - bbox.min().y).powi(2)).sqrt();
+    let threshold = diag * 0.015;
 
-    if sides_near_boundary > 0.0 {
-        let sdf_left = polygon_sdf(poly, x0, (y0 + y1) * 0.5);
-        let sdf_right = polygon_sdf(poly, x1, (y0 + y1) * 0.5);
-        let sdf_bottom = polygon_sdf(poly, (x0 + x1) * 0.5, y0);
-        let sdf_top = polygon_sdf(poly, (x0 + x1) * 0.5, y1);
+    let sdf_l = polygon_sdf(poly, x0, (y0 + y1) * 0.5).abs();
+    let sdf_r = polygon_sdf(poly, x1, (y0 + y1) * 0.5).abs();
+    let sdf_b = polygon_sdf(poly, (x0 + x1) * 0.5, y0).abs();
+    let sdf_t = polygon_sdf(poly, (x0 + x1) * 0.5, y1).abs();
 
-        let avg_dist = (sdf_left.abs() + sdf_right.abs() + sdf_bottom.abs() + sdf_top.abs()) * 0.25;
-        return sides_near_boundary * 0.5 + (avg_dist.min(1.0)) * 0.5;
-    }
+    let near = [sdf_l, sdf_r, sdf_b, sdf_t]
+        .iter()
+        .filter(|&&d| d < threshold)
+        .count() as f64;
 
-    0.0
+    near / 4.0
 }
 
 fn generate_vertical_pair_candidates(
@@ -591,26 +579,26 @@ fn generate_single_side_anchor_candidates(
 
     let min_dim = diag * 0.02;
 
-    let left_candidates = generate_side_anchored_at_x(&frame.poly, minx, miny, maxy, min_dim, max_ratio, min_ratio, current_best_area);
+    let left_candidates = generate_side_anchored_at_x(&frame.poly, minx, miny, maxy, min_dim, max_ratio, min_ratio, current_best_area, &frame.x_events);
     candidates.extend(left_candidates);
 
-    let right_candidates = generate_side_anchored_at_x(&frame.poly, maxx, miny, maxy, min_dim, max_ratio, min_ratio, current_best_area);
+    let right_candidates = generate_side_anchored_at_x(&frame.poly, maxx, miny, maxy, min_dim, max_ratio, min_ratio, current_best_area, &frame.x_events);
     candidates.extend(right_candidates);
 
-    let bottom_candidates = generate_side_anchored_at_y(&frame.poly, minx, maxx, miny, min_dim, max_ratio, min_ratio, current_best_area);
+    let bottom_candidates = generate_side_anchored_at_y(&frame.poly, minx, maxx, miny, min_dim, max_ratio, min_ratio, current_best_area, &frame.y_events);
     candidates.extend(bottom_candidates);
 
-    let top_candidates = generate_side_anchored_at_y(&frame.poly, minx, maxx, maxy, min_dim, max_ratio, min_ratio, current_best_area);
+    let top_candidates = generate_side_anchored_at_y(&frame.poly, minx, maxx, maxy, min_dim, max_ratio, min_ratio, current_best_area, &frame.y_events);
     candidates.extend(top_candidates);
 
     for edge_chain in extract_dominant_chains(&frame.poly) {
         match edge_chain {
             EdgeChain::Vertical { x, y_min, y_max } => {
-                let chain_candidates = generate_side_anchored_at_x(&frame.poly, x, y_min, y_max, min_dim, max_ratio, min_ratio, current_best_area);
+                let chain_candidates = generate_side_anchored_at_x(&frame.poly, x, y_min, y_max, min_dim, max_ratio, min_ratio, current_best_area, &frame.x_events);
                 candidates.extend(chain_candidates);
             }
             EdgeChain::Horizontal { y, x_min, x_max } => {
-                let chain_candidates = generate_side_anchored_at_y(&frame.poly, x_min, x_max, y, min_dim, max_ratio, min_ratio, current_best_area);
+                let chain_candidates = generate_side_anchored_at_y(&frame.poly, x_min, x_max, y, min_dim, max_ratio, min_ratio, current_best_area, &frame.y_events);
                 candidates.extend(chain_candidates);
             }
         }
@@ -675,6 +663,7 @@ fn generate_side_anchored_at_x(
     _max_ratio: f64,
     _min_ratio: f64,
     current_best_area: f64,
+    _x_events: &[f64],
 ) -> Vec<EdgeCandidate> {
     let mut candidates = Vec::new();
 
@@ -684,8 +673,9 @@ fn generate_side_anchored_at_x(
             return candidates;
         }
 
+        let x_max = poly.bounding_rect().map(|b| b.max().x).unwrap_or(x_anchor + 100.0);
         let mut x1 = x_anchor + min_dim;
-        while x1 < poly.bounding_rect().map(|b| b.max().x).unwrap_or(x_anchor + 100.0) {
+        while x1 < x_max {
             if let Some((fy0, fy1)) = common_y_interval_for_x_span(poly, x_anchor, x1, 3) {
                 let fspan = fy1 - fy0;
                 if fspan < span * 0.95 {
@@ -717,8 +707,9 @@ fn generate_side_anchored_at_x(
             return candidates;
         }
 
+        let x_min = poly.bounding_rect().map(|b| b.min().x).unwrap_or(x_anchor - 100.0);
         let mut x0 = x_anchor - min_dim;
-        while x0 > poly.bounding_rect().map(|b| b.min().x).unwrap_or(x_anchor - 100.0) {
+        while x0 > x_min {
             if let Some((fy0, fy1)) = common_y_interval_for_x_span(poly, x0, x_anchor, 3) {
                 let fspan = fy1 - fy0;
                 if fspan < span * 0.95 {
@@ -756,6 +747,7 @@ fn generate_side_anchored_at_y(
     _max_ratio: f64,
     _min_ratio: f64,
     current_best_area: f64,
+    _y_events: &[f64],
 ) -> Vec<EdgeCandidate> {
     let mut candidates = Vec::new();
 
@@ -765,8 +757,9 @@ fn generate_side_anchored_at_y(
             return candidates;
         }
 
+        let y_max = poly.bounding_rect().map(|b| b.max().y).unwrap_or(y_anchor + 100.0);
         let mut y1 = y_anchor + min_dim;
-        while y1 < poly.bounding_rect().map(|b| b.max().y).unwrap_or(y_anchor + 100.0) {
+        while y1 < y_max {
             if let Some((fx0, fx1)) = common_x_interval_for_y_span(poly, y_anchor, y1, 3) {
                 let fspan = fx1 - fx0;
                 if fspan < span * 0.95 {
@@ -798,8 +791,9 @@ fn generate_side_anchored_at_y(
             return candidates;
         }
 
+        let y_min = poly.bounding_rect().map(|b| b.min().y).unwrap_or(y_anchor - 100.0);
         let mut y0 = y_anchor - min_dim;
-        while y0 > poly.bounding_rect().map(|b| b.min().y).unwrap_or(y_anchor - 100.0) {
+        while y0 > y_min {
             if let Some((fx0, fx1)) = common_x_interval_for_y_span(poly, y0, y_anchor, 3) {
                 let fspan = fx1 - fx0;
                 if fspan < span * 0.95 {
@@ -864,10 +858,6 @@ fn rect_iou(a: &(f64, f64, f64, f64), b: &(f64, f64, f64, f64)) -> f64 {
 }
 
 fn similar_rect(a: &EdgeCandidate, b: &EdgeCandidate, diag: f64) -> bool {
-    if a.origin != b.origin {
-        return false;
-    }
-
     angle_diff(a.angle, b.angle) < 0.75
         && center_distance(&a.rect_rot, &b.rect_rot) < 0.03 * diag
         && rect_iou(&a.rect_rot, &b.rect_rot) > 0.85
@@ -890,13 +880,14 @@ pub fn generate_edge_anchored_candidates(
     poly: &Polygon<f64>,
     angle_deg: f64,
     options: &LirOrientedOptions,
+    current_best_area: f64,
 ) -> Vec<EdgeCandidate> {
     let frame = build_rot_frame(poly, angle_deg);
 
     let (minx, miny, maxx, maxy) = frame.bbox;
     let diag = ((maxx - minx).powi(2) + (maxy - miny).powi(2)).sqrt();
 
-    let current_best_area = diag * diag * 0.25;
+    let threshold = if current_best_area > 0.0 { current_best_area } else { diag * diag * 0.25 };
 
     let top_k = 12;
 
@@ -904,7 +895,7 @@ pub fn generate_edge_anchored_candidates(
         &frame,
         options.max_ratio,
         options.min_ratio,
-        current_best_area,
+        threshold,
         top_k,
     );
 
@@ -912,7 +903,7 @@ pub fn generate_edge_anchored_candidates(
         &frame,
         options.max_ratio,
         options.min_ratio,
-        current_best_area,
+        threshold,
         top_k,
     );
 
@@ -920,7 +911,7 @@ pub fn generate_edge_anchored_candidates(
         &frame,
         options.max_ratio,
         options.min_ratio,
-        current_best_area,
+        threshold,
         top_k,
     );
 
@@ -1009,7 +1000,7 @@ mod tests {
     fn test_generate_edge_anchored() {
         let poly = right_triangle();
         let options = LirOrientedOptions::default();
-        let candidates = generate_edge_anchored_candidates(&poly, 0.0, &options);
+        let candidates = generate_edge_anchored_candidates(&poly, 0.0, &options, 0.0);
         assert!(!candidates.is_empty());
     }
 
@@ -1017,7 +1008,7 @@ mod tests {
     fn test_l_shape_edge_anchored() {
         let poly = l_shape();
         let options = LirOrientedOptions::default();
-        let candidates = generate_edge_anchored_candidates(&poly, 0.0, &options);
+        let candidates = generate_edge_anchored_candidates(&poly, 0.0, &options, 0.0);
         assert!(!candidates.is_empty());
     }
 
@@ -1025,7 +1016,7 @@ mod tests {
     fn test_deduplication() {
         let poly = right_triangle();
         let options = LirOrientedOptions::default();
-        let mut candidates = generate_edge_anchored_candidates(&poly, 0.0, &options);
+        let mut candidates = generate_edge_anchored_candidates(&poly, 0.0, &options, 0.0);
         let diag = 14.14;
         deduplicate_candidates(&mut candidates, diag);
         assert!(!candidates.is_empty());

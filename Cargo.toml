@@ -31,3 +31,13 @@ anyhow = "1.0"
 criterion = "0.5"
 rustc-hash = "2"
 
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+strip = true
+debug = false
+incremental = false
+
