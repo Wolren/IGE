@@ -10,6 +10,8 @@ pub mod solvers;
 pub mod gpu;
 
 pub use algorithms::LirSolver;
+
+// LIR solvers
 pub use solvers::lir::axis_aligned::{solve_vertex_grid, AxisAlignedOptions, detect_polygon_type};
 pub use solvers::lir::axis_aligned::{
     MaskBackend,
@@ -18,6 +20,8 @@ pub use solvers::lir::axis_aligned::{
 };
 pub use solvers::lir::oriented::{solve_lir_oriented, LirOrientedOptions, LirOrientedResult};
 pub use solvers::lir::oriented::parallel::solve_lir_oriented_parallel;
+
+// MIC solvers
 pub use solvers::mic::{
     maximum_inscribed_circle,
     maximum_inscribed_circle_multipolygon,
@@ -28,6 +32,18 @@ pub use solvers::mic::{
     MicUsedEngine,
     RobustMode,
 };
+
+// LER solvers
+pub use solvers::ler::{LerOptions, LerResult, solve_ler_axis_aligned, solve_ler_oriented};
+
+// Nesting solvers
+pub use solvers::nesting::{NestingOptions, NestingResult, solve_nesting, solve_nesting_convex};
+
+// LER + LIR combined solvers
+pub use solvers::ler_lir::{LerLirOptions, LerLirResult, solve_ler_lir, solve_ler_lir_axis_aligned};
+
+// OBB solvers
+pub use solvers::obb::{ObbOptions, ObbResult, solve_obb, solve_obb_constrained};
 
 pub use shared::{PolygonType, LirError, Result, Rectangle, SolverOptions, rotate_polygon, AlgorithmCategory, AlgorithmPrecision, AlgorithmSpeed, SolverBackend};
 

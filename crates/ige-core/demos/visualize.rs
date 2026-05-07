@@ -499,9 +499,11 @@ fn main() {
     let real_only = args.contains(&"--real-only".to_string());
     let use_parallel = args.contains(&"--parallel".to_string());
     let use_sa = args.contains(&"--sa".to_string());
+    let use_bootstrap_seeds = args.contains(&"--bootstrap-seeds".to_string());
     let use_pca_axes = args.contains(&"--pca-axes".to_string());
     let use_multi_center = args.contains(&"--multi-center".to_string());
     let use_early_stopping = args.contains(&"--early-stop".to_string());
+    let use_edge_anchored = args.contains(&"--edge-anchored".to_string());
     let use_approx_oriented = !args.contains(&"--baseline".to_string());
     let use_json = args.contains(&"--json".to_string());
     let limit = args.iter()
@@ -531,6 +533,14 @@ fn main() {
         "LIR Approx Oriented + SA + local angle polish".to_string()
     } else if use_sa {
         "LIR Approx Oriented + SA rescue".to_string()
+    } else if use_bootstrap_seeds && use_edge_anchored {
+        "LIR Approx Oriented + bootstrap seeds + edge-anchored".to_string()
+    } else if use_bootstrap_seeds && use_parallel {
+        "LIR Approx Oriented + bootstrap seeds + local angle polish".to_string()
+    } else if use_bootstrap_seeds {
+        "LIR Approx Oriented + bootstrap seeds".to_string()
+    } else if use_edge_anchored {
+        "LIR Approx Oriented + edge-anchored".to_string()
     } else if use_parallel {
         "LIR Approx Oriented + local angle polish".to_string()
     } else if use_approx_oriented {
@@ -773,13 +783,15 @@ svg{{width:100%;height:220px;background:#0f0f23;border-radius:4px}}
             let start = std::time::Instant::now();
             let poly_area = poly.unsigned_area();
 
-            let (rp, ra, ang, be) = if use_parallel || use_sa || use_pca_axes || use_multi_center || use_early_stopping {
+            let (rp, ra, ang, be) = if use_parallel || use_sa || use_bootstrap_seeds || use_pca_axes || use_multi_center || use_early_stopping || use_edge_anchored {
                 let mut opts = LirOrientedOptions::default();
                 opts.use_parallel_field = use_parallel;
                 opts.use_simulated_annealing = use_sa;
+                opts.use_bootstrap_seeds = use_bootstrap_seeds;
                 opts.use_pca_axes = use_pca_axes;
                 opts.use_multi_center = use_multi_center;
                 opts.use_early_stopping = use_early_stopping;
+                opts.use_edge_anchored = use_edge_anchored;
                 match solve_lir_oriented(poly, &opts) {
                     Ok(r) => (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
                     Err(_) => (None, 0.0, 0.0, false),
@@ -812,7 +824,7 @@ svg{{width:100%;height:220px;background:#0f0f23;border-radius:4px}}
                     }
                     AxisCliSolver::Grid => {
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            solve_axis_rect_grid_with_backend(poly, opts.max_grid, opts.max_ratio, mask_backend)
+                            solve_axis_rect_grid_with_backend(poly, opts.max_grid, opts.max_ratio, opts.min_ratio, mask_backend)
                         })) {
                             Ok(Some((x0, y0, x1, y1, _))) => {
                                 let rp = Polygon::new(LineString::from(vec![

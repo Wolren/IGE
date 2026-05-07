@@ -101,10 +101,11 @@ pub struct PyAxisAlignedResult {
     pub area: f64,
 }
 
-#[pyfunction(signature = (exterior, max_aspect_ratio=None))]
+#[pyfunction(signature = (exterior, max_aspect_ratio=None, min_aspect_ratio=None))]
 pub fn solve_axis_aligned_py(
     exterior: Vec<(f64, f64)>,
     max_aspect_ratio: Option<f64>,
+    min_aspect_ratio: Option<f64>,
 ) -> PyResult<PyAxisAlignedResult> {
     if exterior.len() < 3 {
         return Err(PyValueError::new_err("polygon exterior must contain at least 3 points"));
@@ -120,6 +121,9 @@ pub fn solve_axis_aligned_py(
     let mut opts = AxisAlignedOptions::default();
     if let Some(ratio) = max_aspect_ratio {
         opts.max_ratio = ratio;
+    }
+    if let Some(ratio) = min_aspect_ratio {
+        opts.min_ratio = ratio;
     }
 
     let result = solve_axis_aligned(&polygon, &opts)
@@ -138,6 +142,7 @@ pub fn solve_axis_aligned_py(
 fn axis_aligned_demo() -> PyResult<String> {
     let result = solve_axis_aligned_py(
         vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)],
+        None,
         None,
     )?;
     Ok(format!(
@@ -165,12 +170,14 @@ pub struct PyLirOrientedResult {
     pub angle_deg: f64,
 }
 
-#[pyfunction(signature = (exterior, max_aspect_ratio=None, use_parallel_field=false, use_simulated_annealing=false, use_pca_axes=false, use_multi_center=false, use_early_stopping=false))]
+#[pyfunction(signature = (exterior, max_aspect_ratio=None, min_aspect_ratio=None, use_parallel_field=false, use_simulated_annealing=false, use_bootstrap_seeds=false, use_pca_axes=false, use_multi_center=false, use_early_stopping=false))]
 pub fn solve_lir_oriented_py(
     exterior: Vec<(f64, f64)>,
     max_aspect_ratio: Option<f64>,
+    min_aspect_ratio: Option<f64>,
     use_parallel_field: bool,
     use_simulated_annealing: bool,
+    use_bootstrap_seeds: bool,
     use_pca_axes: bool,
     use_multi_center: bool,
     use_early_stopping: bool,
@@ -190,8 +197,12 @@ pub fn solve_lir_oriented_py(
     if let Some(ratio) = max_aspect_ratio {
         opts.max_ratio = ratio;
     }
+    if let Some(ratio) = min_aspect_ratio {
+        opts.min_ratio = ratio;
+    }
     opts.use_parallel_field = use_parallel_field;
     opts.use_simulated_annealing = use_simulated_annealing;
+    opts.use_bootstrap_seeds = use_bootstrap_seeds;
     opts.use_pca_axes = use_pca_axes;
     opts.use_multi_center = use_multi_center;
     opts.use_early_stopping = use_early_stopping;
@@ -213,12 +224,14 @@ pub fn solve_lir_oriented_py(
     })
 }
 
-#[pyfunction(signature = (exterior, max_aspect_ratio=None, use_parallel_field=false, use_simulated_annealing=false, use_pca_axes=false, use_multi_center=false, use_early_stopping=false))]
+#[pyfunction(signature = (exterior, max_aspect_ratio=None, min_aspect_ratio=None, use_parallel_field=false, use_simulated_annealing=false, use_bootstrap_seeds=false, use_pca_axes=false, use_multi_center=false, use_early_stopping=false))]
 pub fn solve_bcrs_py(
     exterior: Vec<(f64, f64)>,
     max_aspect_ratio: Option<f64>,
+    min_aspect_ratio: Option<f64>,
     use_parallel_field: bool,
     use_simulated_annealing: bool,
+    use_bootstrap_seeds: bool,
     use_pca_axes: bool,
     use_multi_center: bool,
     use_early_stopping: bool,
@@ -226,8 +239,10 @@ pub fn solve_bcrs_py(
     solve_lir_oriented_py(
         exterior,
         max_aspect_ratio,
+        min_aspect_ratio,
         use_parallel_field,
         use_simulated_annealing,
+        use_bootstrap_seeds,
         use_pca_axes,
         use_multi_center,
         use_early_stopping,
@@ -316,6 +331,87 @@ pub fn solve_mic_py(
     })
 }
 
+// ─── LER solver (placeholder) ─────────────────────────────────────────────
+
+#[pyfunction]
+pub fn solve_ler_axis_aligned_py(
+    _exterior: Vec<(f64, f64)>,
+    _obstacles: Option<Vec<Vec<(f64, f64)>>>,
+) -> PyResult<PyAxisAlignedResult> {
+    Err(PyValueError::new_err("LER solver not yet implemented"))
+}
+
+#[pyfunction]
+pub fn solve_ler_oriented_py(
+    _exterior: Vec<(f64, f64)>,
+    _obstacles: Option<Vec<Vec<(f64, f64)>>>,
+) -> PyResult<PyLirOrientedResult> {
+    Err(PyValueError::new_err("LER oriented solver not yet implemented"))
+}
+
+// ─── Nesting solver (placeholder) ─────────────────────────────────────────
+
+#[pyclass]
+#[derive(Clone)]
+pub struct PyNestingResult {
+    #[pyo3(get)]
+    pub area: f64,
+    #[pyo3(get)]
+    pub fill_ratio: f64,
+}
+
+#[pyfunction]
+pub fn solve_nesting_py(
+    _exterior: Vec<(f64, f64)>,
+) -> PyResult<PyNestingResult> {
+    Err(PyValueError::new_err("Nesting solver not yet implemented"))
+}
+
+// ─── LER + LIR combined solver (placeholder) ─────────────────────────────
+
+#[pyclass]
+#[derive(Clone)]
+pub struct PyLerLirResult {
+    #[pyo3(get)]
+    pub lir_area: f64,
+    #[pyo3(get)]
+    pub ler_area: f64,
+}
+
+#[pyfunction]
+pub fn solve_ler_lir_py(
+    _exterior: Vec<(f64, f64)>,
+    _obstacles: Option<Vec<Vec<(f64, f64)>>>,
+) -> PyResult<PyLerLirResult> {
+    Err(PyValueError::new_err("LER+LIR solver not yet implemented"))
+}
+
+// ─── OBB solver (placeholder) ─────────────────────────────────────────────
+
+#[pyclass]
+#[derive(Clone)]
+pub struct PyObbResult {
+    #[pyo3(get)]
+    pub area: f64,
+    #[pyo3(get)]
+    pub angle_deg: f64,
+    #[pyo3(get)]
+    pub width: f64,
+    #[pyo3(get)]
+    pub height: f64,
+    #[pyo3(get)]
+    pub aspect_ratio: f64,
+    #[pyo3(get)]
+    pub fill_ratio: f64,
+}
+
+#[pyfunction]
+pub fn solve_obb_py(
+    _exterior: Vec<(f64, f64)>,
+) -> PyResult<PyObbResult> {
+    Err(PyValueError::new_err("OBB solver not yet implemented"))
+}
+
 // ─── Module registration ──────────────────────────────────────────────────
 
 #[pymodule]
@@ -334,6 +430,22 @@ fn _native(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
 
     m.add_class::<PyMicResult>()?;
     m.add_function(wrap_pyfunction!(solve_mic_py, m)?)?;
+
+    // LER solvers
+    m.add_function(wrap_pyfunction!(solve_ler_axis_aligned_py, m)?)?;
+    m.add_function(wrap_pyfunction!(solve_ler_oriented_py, m)?)?;
+
+    // Nesting solver
+    m.add_class::<PyNestingResult>()?;
+    m.add_function(wrap_pyfunction!(solve_nesting_py, m)?)?;
+
+    // LER + LIR solver
+    m.add_class::<PyLerLirResult>()?;
+    m.add_function(wrap_pyfunction!(solve_ler_lir_py, m)?)?;
+
+    // OBB solver
+    m.add_class::<PyObbResult>()?;
+    m.add_function(wrap_pyfunction!(solve_obb_py, m)?)?;
 
     Ok(())
 }

@@ -5,6 +5,7 @@
 
 pub mod candidates;
 pub mod certify;
+pub mod edge_anchor;
 pub mod expand;
 pub mod fast;
 pub mod parallel;
@@ -29,6 +30,9 @@ pub(crate) use certify::certify_and_adjust;
 pub struct LirOrientedOptions {
     /// Max aspect ratio (longer/shorter side); 0.0 = unconstrained.
     pub max_ratio: f64,
+    /// Min aspect ratio (longer/shorter side); 0.0 = unconstrained.
+    /// Use this to require rectangles to be at least this elongated.
+    pub min_ratio: f64,
     /// Coarse grid resolution used for heuristic seeding and Brent polish.
     pub grid_coarse: usize,
     /// Fine grid resolution used in conservative fallback.
@@ -41,10 +45,14 @@ pub struct LirOrientedOptions {
     pub use_parallel_field: bool,
     /// If true, run an experimental simulated-annealing basin escape over (center, angle).
     pub use_simulated_annealing: bool,
+    /// If true, use deterministic bootstrap seeds (vertex-snapped + center seeds) per angle.
+    pub use_bootstrap_seeds: bool,
     /// If true, use Principal Component Analysis to guide initial angle candidates.
     pub use_pca_axes: bool,
     /// If true, evaluate multiple center offsets per angle for better basin exploration.
     pub use_multi_center: bool,
+    /// If true, generate edge-anchored candidates from boundary support relationships.
+    pub use_edge_anchored: bool,
     /// If true, use early stopping when top-k candidates stabilize.
     pub use_early_stopping: bool,
     /// Half-width (degrees) for the Brent golden-section polish.
@@ -76,14 +84,17 @@ impl Default for LirOrientedOptions {
     fn default() -> Self {
         Self {
             max_ratio: 0.0,
+            min_ratio: 0.0,
             grid_coarse: crate::tuning::GRID_COARSE,
             grid_fine: crate::tuning::GRID_FINE,
             top_k: crate::tuning::TOP_K,
             always_return: true,
             use_parallel_field: false,
             use_simulated_annealing: false,
+            use_bootstrap_seeds: false,
             use_pca_axes: false,
             use_multi_center: false,
+            use_edge_anchored: false,
             use_early_stopping: false,
             polish_halwidth_deg: crate::tuning::POLISH_HALFWIDTH,
             polish_xatol_deg: crate::tuning::POLISH_XATOL,
@@ -183,19 +194,23 @@ pub fn worker_process_feature(
     grid_coarse: usize,
     grid_fine: usize,
     max_ratio: f64,
+    min_ratio: f64,
     top_k: usize,
     always_return: bool,
 ) -> Option<(Rectangle, f64, f64, f64, usize, f64, bool)> {
     let options = LirOrientedOptions {
         max_ratio,
+        min_ratio,
         grid_coarse,
         grid_fine,
         top_k,
         always_return,
         use_parallel_field: false,
         use_simulated_annealing: false,
+        use_bootstrap_seeds: false,
         use_pca_axes: false,
         use_multi_center: false,
+        use_edge_anchored: false,
         use_early_stopping: false,
         polish_halwidth_deg: crate::tuning::POLISH_HALFWIDTH,
         polish_xatol_deg: crate::tuning::POLISH_XATOL,

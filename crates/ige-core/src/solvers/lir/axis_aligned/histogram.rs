@@ -13,6 +13,7 @@
 /// * `ys`        -- row boundary y-coordinates (length = n_rows + 1)
 /// * `row_idx`   -- current row index (0-based)
 /// * `max_ratio` -- max aspect ratio (longer/shorter <= max_ratio); 0.0 = unconstrained
+/// * `min_ratio` -- min aspect ratio (longer/shorter >= min_ratio); 0.0 = unconstrained
 ///
 /// Returns `(x0, y0, x1, y1, area)`.
 pub fn lrih_vp(
@@ -21,6 +22,7 @@ pub fn lrih_vp(
     ys: &[f64],
     row_idx: usize,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> (f64, f64, f64, f64, f64) {
     let n = heights.len();
     let n_xs = xs.len();
@@ -52,20 +54,30 @@ pub fn lrih_vp(
             let rh = y1 - y0;
 
             if rw > 0.0 && rh > 0.0 {
-                if max_ratio > 0.0 {
-                    let ls = rw.max(rh);
-                    let ss = rw.min(rh);
-                    if ss > 0.0 && ls / ss > max_ratio {
-                        let nl = ss * max_ratio;
-                        if rw >= rh {
-                            let cx = (x0 + x1) * 0.5;
-                            x0 = cx - nl * 0.5;
-                            x1 = cx + nl * 0.5;
-                        } else {
-                            let cy = (y0 + y1) * 0.5;
-                            y0 = cy - nl * 0.5;
-                            y1 = cy + nl * 0.5;
-                        }
+                let ls = rw.max(rh);
+                let ss = rw.min(rh);
+                let current_ratio = ls / ss;
+                if max_ratio > 0.0 && current_ratio > max_ratio {
+                    let nl = ss * max_ratio;
+                    if rw >= rh {
+                        let cx = (x0 + x1) * 0.5;
+                        x0 = cx - nl * 0.5;
+                        x1 = cx + nl * 0.5;
+                    } else {
+                        let cy = (y0 + y1) * 0.5;
+                        y0 = cy - nl * 0.5;
+                        y1 = cy + nl * 0.5;
+                    }
+                } else if min_ratio > 0.0 && current_ratio < min_ratio {
+                    let nl = ss * min_ratio;
+                    if rw >= rh {
+                        let cx = (x0 + x1) * 0.5;
+                        x0 = cx - nl * 0.5;
+                        x1 = cx + nl * 0.5;
+                    } else {
+                        let cy = (y0 + y1) * 0.5;
+                        y0 = cy - nl * 0.5;
+                        y1 = cy + nl * 0.5;
                     }
                 }
                 let rw2 = x1 - x0;
@@ -100,6 +112,7 @@ pub fn lrih(
     ys: &[f64],
     row_idx: usize,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> (f64, f64, f64, f64, f64) {
     let n = heights.len();
     let n_xs = xs.len();
@@ -130,20 +143,30 @@ pub fn lrih(
             let rh = y1 - y0;
 
             if rw > 0.0 && rh > 0.0 {
-                if max_ratio > 0.0 {
-                    let ls = rw.max(rh);
-                    let ss = rw.min(rh);
-                    if ss > 0.0 && ls / ss > max_ratio {
-                        let nl = ss * max_ratio;
-                        if rw >= rh {
-                            let cx = (x0 + x1) * 0.5;
-                            x0 = cx - nl * 0.5;
-                            x1 = cx + nl * 0.5;
-                        } else {
-                            let cy = (y0 + y1) * 0.5;
-                            y0 = cy - nl * 0.5;
-                            y1 = cy + nl * 0.5;
-                        }
+                let ls = rw.max(rh);
+                let ss = rw.min(rh);
+                let current_ratio = ls / ss;
+                if max_ratio > 0.0 && current_ratio > max_ratio {
+                    let nl = ss * max_ratio;
+                    if rw >= rh {
+                        let cx = (x0 + x1) * 0.5;
+                        x0 = cx - nl * 0.5;
+                        x1 = cx + nl * 0.5;
+                    } else {
+                        let cy = (y0 + y1) * 0.5;
+                        y0 = cy - nl * 0.5;
+                        y1 = cy + nl * 0.5;
+                    }
+                } else if min_ratio > 0.0 && current_ratio < min_ratio {
+                    let nl = ss * min_ratio;
+                    if rw >= rh {
+                        let cx = (x0 + x1) * 0.5;
+                        x0 = cx - nl * 0.5;
+                        x1 = cx + nl * 0.5;
+                    } else {
+                        let cy = (y0 + y1) * 0.5;
+                        y0 = cy - nl * 0.5;
+                        y1 = cy + nl * 0.5;
                     }
                 }
                 let rw2 = x1 - x0;
@@ -176,7 +199,7 @@ mod tests {
         let heights = vec![4usize; 4];
         let xs = vec![0.0, 1.0, 2.0, 3.0, 4.0];
         let ys = vec![0.0, 1.0, 2.0, 3.0, 4.0];
-        let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs, &ys, 3, 0.0);
+        let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs, &ys, 3, 0.0, 0.0);
         assert!((area - 16.0).abs() < 1e-9, "area={area}");
         assert!((x1 - x0 - 4.0).abs() < 1e-9);
         assert!((y1 - y0 - 4.0).abs() < 1e-9);
@@ -187,7 +210,7 @@ mod tests {
         let heights = vec![3usize, 3, 1, 1];
         let xs = vec![0.0, 1.0, 2.0, 3.0, 4.0];
         let ys = vec![0.0, 1.0, 2.0, 3.0];
-        let (_, _, _, _, area) = lrih_vp(&heights, &xs, &ys, 2, 0.0);
+        let (_, _, _, _, area) = lrih_vp(&heights, &xs, &ys, 2, 0.0, 0.0);
         assert!((area - 6.0).abs() < 1e-9, "area={area}");
     }
 
@@ -196,7 +219,7 @@ mod tests {
         let heights = vec![4usize; 4];
         let xs = vec![0.0, 1.0, 2.0, 3.0, 4.0];
         let ys = vec![0.0, 1.0, 2.0, 3.0, 4.0];
-        let (_, _, _, _, area) = lrih_vp(&heights, &xs, &ys, 3, 1.5);
+        let (_, _, _, _, area) = lrih_vp(&heights, &xs, &ys, 3, 1.5, 0.0);
         assert!((area - 16.0).abs() < 1e-9);
     }
 
@@ -205,7 +228,7 @@ mod tests {
         let heights = vec![2usize; 8];
         let xs: Vec<f64> = (0..=8).map(|i| i as f64).collect();
         let ys = vec![0.0, 1.0, 2.0];
-        let (_, _, _, _, area) = lrih_vp(&heights, &xs, &ys, 1, 2.0);
+        let (_, _, _, _, area) = lrih_vp(&heights, &xs, &ys, 1, 2.0, 0.0);
         assert!(area < 16.0, "should be clipped, got {area}");
     }
 
@@ -214,7 +237,7 @@ mod tests {
         let heights = vec![5usize; 5];
         let xs: Vec<f64> = vec![0.0, 2.5, 5.0, 7.5, 10.0];
         let ys: Vec<f64> = vec![0.0, 2.5, 5.0, 7.5, 10.0];
-        let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, 4, 0.0);
+        let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, 4, 0.0, 0.0);
         assert!((area - 100.0).abs() < 1e-9, "area={area}");
         assert!((x0 - 0.0).abs() < 1e-9);
         assert!((x1 - 10.0).abs() < 1e-9);

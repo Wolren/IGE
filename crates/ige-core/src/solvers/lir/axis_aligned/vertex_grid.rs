@@ -146,6 +146,7 @@ fn compute_row_intervals(poly: &Polygon<f64>, xs: &[f64], ys: &[f64]) -> Vec<Vec
 #[derive(Debug, Clone)]
 pub struct AxisAlignedOptions {
     pub max_ratio: f64,
+    pub min_ratio: f64,
     pub max_grid: usize,
 }
 
@@ -153,15 +154,13 @@ impl Default for AxisAlignedOptions {
     fn default() -> Self {
         Self {
             max_ratio: 0.0,
+            min_ratio: 0.0,
             max_grid: crate::tuning::GRID_COARSE,
         }
     }
 }
 
-fn clamp_aspect_ratio(x0: f64, y0: f64, x1: f64, y1: f64, max_ratio: f64) -> (f64, f64, f64, f64) {
-    if max_ratio <= 0.0 {
-        return (x0, y0, x1, y1);
-    }
+fn clamp_aspect_ratio(x0: f64, y0: f64, x1: f64, y1: f64, max_ratio: f64, min_ratio: f64) -> (f64, f64, f64, f64) {
     let rw = x1 - x0;
     let rh = y1 - y0;
     if rw <= 0.0 || rh <= 0.0 {
@@ -169,8 +168,18 @@ fn clamp_aspect_ratio(x0: f64, y0: f64, x1: f64, y1: f64, max_ratio: f64) -> (f6
     }
     let ls = rw.max(rh);
     let ss = rw.min(rh);
-    if ss > 0.0 && ls / ss > max_ratio {
+    let current_ratio = ls / ss;
+    if max_ratio > 0.0 && current_ratio > max_ratio {
         let nl = ss * max_ratio;
+        if rw >= rh {
+            let cx = (x0 + x1) * 0.5;
+            (cx - nl * 0.5, y0, cx + nl * 0.5, y1)
+        } else {
+            let cy = (y0 + y1) * 0.5;
+            (x0, cy - nl * 0.5, x1, cy + nl * 0.5)
+        }
+    } else if min_ratio > 0.0 && current_ratio < min_ratio {
+        let nl = ss * min_ratio;
         if rw >= rh {
             let cx = (x0 + x1) * 0.5;
             (cx - nl * 0.5, y0, cx + nl * 0.5, y1)
@@ -260,7 +269,7 @@ pub fn solve_vertex_grid(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> O
         let (x0, y0, x1, y1, area) = largest_rect_in_histogram(&heights, &xs, &ys, row);
         if area > best_area {
             best_area = area;
-            let (cx0, cy0, cx1, cy1) = clamp_aspect_ratio(x0, y0, x1, y1, options.max_ratio);
+            let (cx0, cy0, cx1, cy1) = clamp_aspect_ratio(x0, y0, x1, y1, options.max_ratio, options.min_ratio);
             best_rect = Some(Rectangle { x_min: cx0, y_min: cy0, x_max: cx1, y_max: cy1 });
         }
     }
@@ -294,7 +303,7 @@ pub fn solve_vertex_grid(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> O
         (None, Some(bb)) => Some(bb),
         (None, None) => None,
     }.map(|r| {
-        let (x0, y0, x1, y1) = clamp_aspect_ratio(r.x_min, r.y_min, r.x_max, r.y_max, options.max_ratio);
+        let (x0, y0, x1, y1) = clamp_aspect_ratio(r.x_min, r.y_min, r.x_max, r.y_max, options.max_ratio, options.min_ratio);
         Rectangle { x_min: x0, y_min: y0, x_max: x1, y_max: y1 }
     })
 }

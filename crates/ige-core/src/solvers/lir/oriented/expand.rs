@@ -242,10 +242,7 @@ fn segments_intersect(
     false
 }
 
-fn clamp_aspect_ratio(mut x0: f64, mut y0: f64, mut x1: f64, mut y1: f64, max_ratio: f64) -> (f64, f64, f64, f64) {
-    if max_ratio <= 0.0 {
-        return (x0, y0, x1, y1);
-    }
+fn clamp_aspect_ratio(mut x0: f64, mut y0: f64, mut x1: f64, mut y1: f64, max_ratio: f64, min_ratio: f64) -> (f64, f64, f64, f64) {
     let rw = x1 - x0;
     let rh = y1 - y0;
     if rw <= 0.0 || rh <= 0.0 {
@@ -253,8 +250,20 @@ fn clamp_aspect_ratio(mut x0: f64, mut y0: f64, mut x1: f64, mut y1: f64, max_ra
     }
     let ls = rw.max(rh);
     let ss = rw.min(rh);
-    if ss > 0.0 && ls / ss > max_ratio {
+    let current_ratio = ls / ss;
+    if max_ratio > 0.0 && current_ratio > max_ratio {
         let nl = ss * max_ratio;
+        if rw >= rh {
+            let cx = (x0 + x1) * 0.5;
+            x0 = cx - nl * 0.5;
+            x1 = cx + nl * 0.5;
+        } else {
+            let cy = (y0 + y1) * 0.5;
+            y0 = cy - nl * 0.5;
+            y1 = cy + nl * 0.5;
+        }
+    } else if min_ratio > 0.0 && current_ratio < min_ratio {
+        let nl = ss * min_ratio;
         if rw >= rh {
             let cx = (x0 + x1) * 0.5;
             x0 = cx - nl * 0.5;
@@ -275,6 +284,7 @@ pub fn expand_rect_to_boundary(
     x1: f64,
     y1: f64,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> (f64, f64, f64, f64) {
     // Build spatial index once for all rect_covers queries
     let idx = CoversIndex::from_polygon(rot_poly);
@@ -409,7 +419,7 @@ pub fn expand_rect_to_boundary(
         if !any_changed { break; }
     }
 
-    (x0, y0, x1, y1) = clamp_aspect_ratio(x0, y0, x1, y1, max_ratio);
+    (x0, y0, x1, y1) = clamp_aspect_ratio(x0, y0, x1, y1, max_ratio, min_ratio);
 
     (x0, y0, x1, y1)
 }
@@ -431,7 +441,7 @@ mod tests {
             ]),
             vec![],
         );
-        let (x0, y0, x1, y1) = expand_rect_to_boundary(&poly, 1.0, 1.0, 9.0, 9.0, 0.0);
+        let (x0, y0, x1, y1) = expand_rect_to_boundary(&poly, 1.0, 1.0, 9.0, 9.0, 0.0, 0.0);
         assert!(x0.abs() < 1e-6, "x0={x0}");
         assert!(y0.abs() < 1e-6, "y0={y0}");
         assert!((x1 - 10.0).abs() < 1e-6, "x1={x1}");

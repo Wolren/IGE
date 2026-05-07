@@ -41,14 +41,16 @@ pub fn solve_axis_rect_grid(
     poly: &Polygon<f64>,
     grid_steps: usize,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> Option<(f64, f64, f64, f64, f64)> {
-    solve_axis_rect_grid_with_backend(poly, grid_steps, max_ratio, MaskBackend::default())
+    solve_axis_rect_grid_with_backend(poly, grid_steps, max_ratio, min_ratio, MaskBackend::default())
 }
 
 pub fn solve_axis_rect_grid_with_backend(
     poly: &Polygon<f64>,
     grid_steps: usize,
     max_ratio: f64,
+    min_ratio: f64,
     backend: MaskBackend,
 ) -> Option<(f64, f64, f64, f64, f64)> {
     let bb = poly.bounding_rect()?;
@@ -89,7 +91,7 @@ pub fn solve_axis_rect_grid_with_backend(
             }
         }
 
-        let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio);
+        let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio, min_ratio);
 
         if area > 0.0 {
             best = match best {
@@ -116,14 +118,16 @@ pub fn solve_axis_rect_bcrs(
     rot_poly: &Polygon<f64>,
     seed_bounds: Option<(f64, f64, f64, f64)>,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> Option<(f64, f64, f64, f64, f64)> {
-    solve_axis_rect_bcrs_with_backend(rot_poly, seed_bounds, max_ratio, MaskBackend::default())
+    solve_axis_rect_bcrs_with_backend(rot_poly, seed_bounds, max_ratio, min_ratio, MaskBackend::default())
 }
 
 pub fn solve_axis_rect_bcrs_with_backend(
     rot_poly: &Polygon<f64>,
     seed_bounds: Option<(f64, f64, f64, f64)>,
     max_ratio: f64,
+    min_ratio: f64,
     backend: MaskBackend,
 ) -> Option<(f64, f64, f64, f64, f64)> {
     // Collect vertex coordinates
@@ -190,7 +194,7 @@ pub fn solve_axis_rect_bcrs_with_backend(
             }
         }
 
-        let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs_raw, &ys_raw, r, max_ratio);
+        let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs_raw, &ys_raw, r, max_ratio, min_ratio);
 
         if area > 0.0 {
             best = match best {
@@ -437,7 +441,7 @@ mod tests {
     #[test]
     fn coarse_grid_finds_full_square() {
         let poly = unit_square();
-        let result = solve_axis_rect_grid(&poly, 32, 0.0);
+        let result = solve_axis_rect_grid(&poly, 32, 0.0, 0.0);
         assert!(result.is_some());
         let (x0, _y0, x1, _y1, area) = result.unwrap();
         assert!(area > 70.0, "area={area} too small for coarse grid");
@@ -448,7 +452,7 @@ mod tests {
     #[test]
     fn bcrs_finds_full_square() {
         let poly = unit_square();
-        let result = solve_axis_rect_bcrs(&poly, None, 0.0);
+        let result = solve_axis_rect_bcrs(&poly, None, 0.0, 0.0);
         assert!(result.is_some());
         let (x0, _y0, x1, _y1, area) = result.unwrap();
         assert!((area - 100.0).abs() < 0.01, "area={area}");

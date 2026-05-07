@@ -12,7 +12,7 @@ use super::super::axis_aligned::solve_axis_rect_grid;
 use crate::shared::rotate_polygon;
 
 /// Try the convex fast path. Returns `(certified_polygon, area, angle_deg, ratio)` or `None`.
-pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64) -> Option<(Polygon<f64>, f64, f64, f64)> {
+pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64, min_ratio: f64) -> Option<(Polygon<f64>, f64, f64, f64)> {
     let coords: Vec<Coord<f64>> = poly.exterior().0.iter().cloned().collect();
     let nv = if coords.len() > 1 { coords.len() - 1 } else { 0 };
     let has_holes = !poly.interiors().is_empty();
@@ -106,13 +106,13 @@ pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64) -> Option<(Polygon<f
 
     for &a in &raw_angles {
         let rot = rotate_polygon(poly, -a);
-        let seed = solve_axis_rect_grid(&rot, 60, max_ratio);
+        let seed = solve_axis_rect_grid(&rot, 60, max_ratio, min_ratio);
         let (sx0, sy0, sx1, sy1) = match seed {
             Some((x0, y0, x1, y1, _)) => (x0, y0, x1, y1),
             None => continue,
         };
 
-        let (bx0, by0, bx1, by1) = expand_rect_to_boundary(&rot, sx0, sy0, sx1, sy1, max_ratio);
+        let (bx0, by0, bx1, by1) = expand_rect_to_boundary(&rot, sx0, sy0, sx1, sy1, max_ratio, min_ratio);
         let area_r = (bx1 - bx0) * (by1 - by0);
         if area_r <= 0.0 {
             continue;
@@ -181,7 +181,7 @@ mod tests {
             ]),
             vec![],
         );
-        let result = maybe_fast_path(&poly, 0.0);
+        let result = maybe_fast_path(&poly, 0.0, 0.0);
         assert!(result.is_some());
         let (_, area, _, _) = result.unwrap();
         assert!((area - 50.0).abs() < 1.0);
@@ -199,7 +199,7 @@ mod tests {
             ]),
             vec![],
         );
-        let (_, area, _, ratio) = maybe_fast_path(&poly, 2.0).unwrap();
+        let (_, area, _, ratio) = maybe_fast_path(&poly, 2.0, 0.0).unwrap();
         assert!(area > 45.0 && area < 55.0, "area={area}");
         assert!(ratio <= 2.0 + 1e-9, "ratio={ratio}");
     }
@@ -217,6 +217,6 @@ mod tests {
             ]),
             vec![],
         );
-        assert!(maybe_fast_path(&poly, 0.0).is_none());
+        assert!(maybe_fast_path(&poly, 0.0, 0.0).is_none());
     }
 }

@@ -288,10 +288,8 @@ fn clamp_ratio_about_center(
     x1: f64,
     y1: f64,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> (f64, f64, f64, f64) {
-    if max_ratio <= 0.0 {
-        return (x0, y0, x1, y1);
-    }
     let w = x1 - x0;
     let h = y1 - y0;
     if w <= 0.0 || h <= 0.0 {
@@ -299,17 +297,27 @@ fn clamp_ratio_about_center(
     }
     let ls = w.max(h);
     let ss = w.min(h);
-    if ss <= 0.0 || ls / ss <= max_ratio {
-        return (x0, y0, x1, y1);
-    }
-    let cx = (x0 + x1) * 0.5;
-    let cy = (y0 + y1) * 0.5;
-    if w >= h {
-        let nw = h * max_ratio;
-        (cx - nw * 0.5, y0, cx + nw * 0.5, y1)
+    let current_ratio = ls / ss;
+    if max_ratio > 0.0 && current_ratio > max_ratio {
+        let nl = ss * max_ratio;
+        let cx = (x0 + x1) * 0.5;
+        let cy = (y0 + y1) * 0.5;
+        if w >= h {
+            (cx - nl * 0.5, y0, cx + nl * 0.5, y1)
+        } else {
+            (x0, cy - nl * 0.5, x1, cy + nl * 0.5)
+        }
+    } else if min_ratio > 0.0 && current_ratio < min_ratio {
+        let nl = ss * min_ratio;
+        let cx = (x0 + x1) * 0.5;
+        let cy = (y0 + y1) * 0.5;
+        if w >= h {
+            (cx - nl * 0.5, y0, cx + nl * 0.5, y1)
+        } else {
+            (x0, cy - nl * 0.5, x1, cy + nl * 0.5)
+        }
     } else {
-        let nh = w * max_ratio;
-        (x0, cy - nh * 0.5, x1, cy + nh * 0.5)
+        (x0, y0, x1, y1)
     }
 }
 
@@ -325,27 +333,31 @@ fn center_world_to_rot(center: Point<f64>, angle_deg: f64, origin: Point<f64>) -
     )
 }
 
-fn candidate_from_cross_rays(
-    poly: &Polygon<f64>,
-    center_world: Point<f64>,
+fn cross_ray_clearances(
+    rc: &RotatedCoords,
+    cx: f64,
+    cy: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let dpx = ray_distance_to_boundary(rc, cx, cy, 1.0, 0.0)?;
+    let dnx = ray_distance_to_boundary(rc, cx, cy, -1.0, 0.0)?;
+    let dpy = ray_distance_to_boundary(rc, cx, cy, 0.0, 1.0)?;
+    let dny = ray_distance_to_boundary(rc, cx, cy, 0.0, -1.0)?;
+    Some((dpx, dnx, dpy, dny))
+}
+
+fn candidate_from_clearances(
     angle_deg: f64,
+    cx: f64,
+    cy: f64,
+    (dpx, dnx, dpy, dny): (f64, f64, f64, f64),
     max_ratio: f64,
+    min_ratio: f64,
 ) -> Option<(Candidate, f64)> {
-    let rc = rotate_coords_only(poly, angle_deg);
-    let origin: Point<f64> = poly.centroid()?.into();
-    let (cx, cy) = center_world_to_rot(center_world, angle_deg, origin);
-    if !point_in_rotated_polygon(&rc, cx, cy) {
-        return None;
-    }
-    let dpx = ray_distance_to_boundary(&rc, cx, cy, 1.0, 0.0)?;
-    let dnx = ray_distance_to_boundary(&rc, cx, cy, -1.0, 0.0)?;
-    let dpy = ray_distance_to_boundary(&rc, cx, cy, 0.0, 1.0)?;
-    let dny = ray_distance_to_boundary(&rc, cx, cy, 0.0, -1.0)?;
     let mut x0 = cx - dnx;
     let mut x1 = cx + dpx;
     let mut y0 = cy - dny;
     let mut y1 = cy + dpy;
-    (x0, y0, x1, y1) = clamp_ratio_about_center(x0, y0, x1, y1, max_ratio);
+    (x0, y0, x1, y1) = clamp_ratio_about_center(x0, y0, x1, y1, max_ratio, min_ratio);
     let w = (x1 - x0).max(0.0);
     let h = (y1 - y0).max(0.0);
     if w <= 0.0 || h <= 0.0 {
@@ -365,12 +377,140 @@ fn candidate_from_cross_rays(
     ))
 }
 
+fn candidate_from_cross_rays_rotated(
+    rc: &RotatedCoords,
+    cx: f64,
+    cy: f64,
+    angle_deg: f64,
+    max_ratio: f64,
+    min_ratio: f64,
+) -> Option<(Candidate, f64)> {
+    if !point_in_rotated_polygon(rc, cx, cy) {
+        return None;
+    }
+    let clearances = cross_ray_clearances(rc, cx, cy)?;
+    candidate_from_clearances(angle_deg, cx, cy, clearances, max_ratio, min_ratio)
+}
+
+fn candidate_from_cross_rays(
+    poly: &Polygon<f64>,
+    center_world: Point<f64>,
+    angle_deg: f64,
+    max_ratio: f64,
+    min_ratio: f64,
+) -> Option<(Candidate, f64)> {
+    let rc = rotate_coords_only(poly, angle_deg);
+    let origin: Point<f64> = poly.centroid()?.into();
+    let (cx, cy) = center_world_to_rot(center_world, angle_deg, origin);
+    candidate_from_cross_rays_rotated(&rc, cx, cy, angle_deg, max_ratio, min_ratio)
+}
+
+fn vertex_snapped_valid_candidate(
+    rc: &RotatedCoords,
+    angle: f64,
+    max_ratio: f64,
+    min_ratio: f64,
+    field_max_coords: usize,
+) -> Option<Candidate> {
+    let mut xs_raw: Vec<f64> = rc.exterior.iter().map(|c| c.x).collect();
+    let mut ys_raw: Vec<f64> = rc.exterior.iter().map(|c| c.y).collect();
+    for hole in &rc.holes {
+        for c in hole {
+            xs_raw.push(c.x);
+            ys_raw.push(c.y);
+        }
+    }
+    let (bb_minx, bb_miny, bb_maxx, bb_maxy) = rc.bbox;
+    xs_raw.push(bb_minx);
+    xs_raw.push(bb_maxx);
+    ys_raw.push(bb_miny);
+    ys_raw.push(bb_maxy);
+
+    xs_raw.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ys_raw.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xs_raw.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
+    ys_raw.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
+
+    if xs_raw.len() > field_max_coords || ys_raw.len() > field_max_coords {
+        return None;
+    }
+
+    let n_cols = xs_raw.len().saturating_sub(1);
+    let n_rows = ys_raw.len().saturating_sub(1);
+    if n_cols == 0 || n_rows == 0 {
+        return None;
+    }
+
+    let mask = build_mask_parallel(&rc.exterior, &rc.holes, &xs_raw, &ys_raw);
+    let mut heights = vec![0usize; n_cols];
+    let mut best_local: Option<(f64, f64, f64, f64, f64)> = None;
+
+    for r in 0..n_rows {
+        let base = r * n_cols;
+        for c in 0..n_cols {
+            if mask[base + c] {
+                heights[c] += 1;
+            } else {
+                heights[c] = 0;
+            }
+        }
+        let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs_raw, &ys_raw, r, max_ratio, min_ratio);
+        if area > 0.0 {
+            best_local = match best_local {
+                Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
+                None => Some((x0, y0, x1, y1, area)),
+                _ => best_local,
+            };
+        }
+    }
+
+    best_local.map(|(x0, y0, x1, y1, area)| Candidate {
+        angle,
+        area,
+        rect_rot: (x0, y0, x1, y1),
+    })
+}
+
+fn center_seed_from_unconstrained_rect(
+    rc: &RotatedCoords,
+    angle: f64,
+    max_ratio: f64,
+    min_ratio: f64,
+    current_best_area: f64,
+) -> Option<Candidate> {
+    let (minx, miny, maxx, maxy) = rc.bbox;
+    let cx = (minx + maxx) * 0.5;
+    let cy = (miny + maxy) * 0.5;
+    if !point_in_rotated_polygon(rc, cx, cy) {
+        return None;
+    }
+
+    let clearances = cross_ray_clearances(rc, cx, cy)?;
+    let clearance_min = clearances
+        .0
+        .min(clearances.1)
+        .min(clearances.2)
+        .min(clearances.3);
+    let diag = ((maxx - minx).powi(2) + (maxy - miny).powi(2)).sqrt();
+    if clearance_min < diag * 0.01 {
+        return None;
+    }
+
+    let cross_area = (clearances.0 + clearances.1) * (clearances.2 + clearances.3);
+    if current_best_area > 0.0 && cross_area < current_best_area * 0.20 {
+        return None;
+    }
+
+    candidate_from_clearances(angle, cx, cy, clearances, max_ratio, min_ratio).map(|(c, _)| c)
+}
+
 /// Evaluate candidate at multiple center offsets and return the best.
 /// Tries: centroid, +/- offsets in cardinal directions at 5% diagonal.
 fn candidate_from_multi_centers(
     poly: &Polygon<f64>,
     angle_deg: f64,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> Option<(Candidate, f64)> {
     let centroid: Point<f64> = poly.centroid()?.into();
     let bb = poly.bounding_rect()?;
@@ -390,7 +530,7 @@ fn candidate_from_multi_centers(
     
     for (dx, dy) in center_offsets {
         let center = Point::new(centroid.x() + dx, centroid.y() + dy);
-        if let Some((cand, score)) = candidate_from_cross_rays(poly, center, angle_deg, max_ratio) {
+        if let Some((cand, score)) = candidate_from_cross_rays(poly, center, angle_deg, max_ratio, min_ratio) {
             if best.is_none() || score > best.as_ref().unwrap().1 {
                 best = Some((cand, score));
             }
@@ -416,6 +556,8 @@ fn run_simulated_annealing_candidates(
     poly: &Polygon<f64>,
     seeds: &[Candidate],
     max_ratio: f64,
+    min_ratio: f64,
+    coarse_steps: usize,
 ) -> Vec<Candidate> {
     if seeds.is_empty() {
         return Vec::new();
@@ -424,67 +566,54 @@ fn run_simulated_annealing_candidates(
         Some(v) => v,
         None => return Vec::new(),
     };
-    let diag = ((bb.max().x - bb.min().x).powi(2) + (bb.max().y - bb.min().y).powi(2)).sqrt();
-    let origin: Point<f64> = poly
-        .centroid()
-        .map(|c| c.into())
-        .unwrap_or(Point::new((bb.min().x + bb.max().x) * 0.5, (bb.min().y + bb.max().y) * 0.5));
-    let center_default: Point<f64> = poly
-        .centroid()
-        .map(|c| c.into())
-        .unwrap_or(origin);
+    let _diag = ((bb.max().x - bb.min().x).powi(2) + (bb.max().y - bb.min().y).powi(2)).sqrt();
 
     let chain_count = seeds.len().min(6);
     let mut out = Vec::with_capacity(chain_count * 2);
 
     for (si, seed) in seeds.iter().take(chain_count).enumerate() {
-        let cx = (seed.rect_rot.0 + seed.rect_rot.2) * 0.5;
-        let cy = (seed.rect_rot.1 + seed.rect_rot.3) * 0.5;
-        let cw = rotate_point(cx, cy, seed.angle, &origin);
-        let center_world = Point::new(cw.x, cw.y);
         let mut rng = TinyRng::new((seed.angle.to_bits() ^ ((si as u64 + 1) * 0x9E37_79B9_7F4A_7C15)) | 1);
 
-        let mut current = candidate_from_cross_rays(poly, center_world, seed.angle, max_ratio)
-            .map(|(cand, score)| (center_world, cand.angle, score, cand))
-            .unwrap_or((center_default, seed.angle, seed.area.max(1e-9), seed.clone()));
-        let mut best = current.clone();
+        // Initialize chain with the seed candidate
+        let mut current_angle = seed.angle;
+        let mut current_cand = seed.clone();
+        let mut best_cand = seed.clone();
 
         let iterations = 48usize;
         for k in 0..iterations {
             let t = 1.0 - (k as f64 / iterations as f64);
-            let mut sigma_c = diag * (0.14 * t + 0.01);
-            let mut sigma_a = 9.0 * t + 0.4;
+            let sigma_a = 9.0 * t + 0.4;
             if rng.uniform() < 0.08 {
-                sigma_c *= 3.0;
-                sigma_a *= 2.0;
+                // Occasional large jump
             }
 
-            let proposal_center = Point::new(
-                current.0.x() + rng.normal() * sigma_c,
-                current.0.y() + rng.normal() * sigma_c,
-            );
-            let proposal_angle = wrap_angle_90(current.1 + rng.normal() * sigma_a);
-            let Some((proposal_cand, proposal_score)) =
-                candidate_from_cross_rays(poly, proposal_center, proposal_angle, max_ratio)
-            else {
+            // Propose new angle
+            let proposal_angle = wrap_angle_90(current_angle + rng.normal() * sigma_a);
+            
+            // Evaluate proposal using coarse evaluate (actual area landscape)
+            let Some(proposal_cand) = coarse_evaluate_angle(poly, proposal_angle, coarse_steps, max_ratio, min_ratio) else {
                 continue;
             };
-            let accept = if proposal_score >= current.2 {
+
+            // Accept/reject based on actual coarse area
+            let accept = if proposal_cand.area >= current_cand.area {
                 true
             } else {
                 let temp = 0.08 + 0.92 * t;
-                let denom = (current.2.abs().max(1e-9)) * temp;
-                ((proposal_score - current.2) / denom).exp() > rng.uniform()
+                let denom = (current_cand.area.abs().max(1e-9)) * temp;
+                ((proposal_cand.area - current_cand.area) / denom).exp() > rng.uniform()
             };
+            
             if accept {
-                current = (proposal_center, proposal_angle, proposal_score, proposal_cand);
-                if current.3.area > best.3.area {
-                    best = current.clone();
+                current_angle = proposal_angle;
+                current_cand = proposal_cand;
+                if current_cand.area > best_cand.area {
+                    best_cand = current_cand.clone();
                 }
             }
         }
-        out.push(best.3);
-        out.push(current.3);
+        out.push(best_cand);
+        out.push(current_cand);
     }
     out
 }
@@ -496,6 +625,7 @@ fn coarse_evaluate_angles(
     angles: &[f64],
     coarse_steps: usize,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> Vec<Candidate> {
     angles
         .par_iter()
@@ -532,7 +662,7 @@ fn coarse_evaluate_angles(
                         heights[c] = 0;
                     }
                 }
-                let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio);
+                let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio, min_ratio);
                 if area > 0.0 {
                     best_local = match best_local {
                         Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
@@ -552,6 +682,7 @@ fn coarse_evaluate_angle(
     angle: f64,
     coarse_steps: usize,
     max_ratio: f64,
+    min_ratio: f64,
 ) -> Option<Candidate> {
     let rc = rotate_coords_only(poly, angle);
     let (minx, miny, maxx, maxy) = rc.bbox;
@@ -585,7 +716,7 @@ fn coarse_evaluate_angle(
                 heights[c] = 0;
             }
         }
-        let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio);
+        let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio, min_ratio);
         if area > 0.0 {
             best_local = match best_local {
                 Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
@@ -604,6 +735,7 @@ fn fine_solve_candidate(
     poly: &Polygon<f64>,
     candidate: &Candidate,
     max_ratio: f64,
+    min_ratio: f64,
     always_return: bool,
     field_max_coords: usize,
     cert_eps: f64,
@@ -640,7 +772,7 @@ fn fine_solve_candidate(
 
     if xs_raw.len() > field_max_coords || ys_raw.len() > field_max_coords {
         let (sx0, sy0, sx1, sy1) = candidate.rect_rot;
-        let expanded = expand_rect_to_boundary(&rot, sx0, sy0, sx1, sy1, max_ratio);
+        let expanded = expand_rect_to_boundary(&rot, sx0, sy0, sx1, sy1, max_ratio, min_ratio);
         return build_result(poly, angle, expanded, max_ratio, always_return, &centroid, cert_eps, cert_max_shrink);
     }
 
@@ -668,7 +800,7 @@ fn fine_solve_candidate(
                 heights[c] = 0;
             }
         }
-        let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs_raw, &ys_raw, r, max_ratio);
+        let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs_raw, &ys_raw, r, max_ratio, min_ratio);
         if area > 0.0 {
             best_local = match best_local {
                 Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
@@ -679,7 +811,7 @@ fn fine_solve_candidate(
     }
 
     let (fx0, fy0, fx1, fy1, _) = best_local?;
-    let expanded = expand_rect_to_boundary(&rot, fx0, fy0, fx1, fy1, max_ratio);
+    let expanded = expand_rect_to_boundary(&rot, fx0, fy0, fx1, fy1, max_ratio, min_ratio);
     build_result(poly, angle, expanded, max_ratio, always_return, &centroid, cert_eps, cert_max_shrink)
 }
 
@@ -764,7 +896,7 @@ fn rotate_point(x: f64, y: f64, angle_deg: f64, origin: &Point<f64>) -> Coord<f6
 pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOptions) -> Result<LirOrientedResult> {
     // Fast path for simple convex shapes
     if let Some((rect_poly, area, angle, _)) =
-        super::fast::maybe_fast_path(poly, options.max_ratio)
+        super::fast::maybe_fast_path(poly, options.max_ratio, options.min_ratio)
     {
         let bb = rect_poly.bounding_rect().unwrap();
         return Ok(LirOrientedResult {
@@ -830,12 +962,11 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
 
         evaluated_angles.push(angle);
         
-        // Multi-center evaluation if enabled
         let c = if options.use_multi_center {
-            candidate_from_multi_centers(&poly, angle, options.max_ratio)
+            candidate_from_multi_centers(&poly, angle, options.max_ratio, options.min_ratio)
                 .map(|(cand, _)| cand)
         } else {
-            coarse_evaluate_angle(&poly, angle, coarse_steps, options.max_ratio)
+            coarse_evaluate_angle(&poly, angle, coarse_steps, options.max_ratio, options.min_ratio)
         };
         
         if let Some(c) = c {
@@ -890,7 +1021,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
         .collect();
 
     if !refinement_angles.is_empty() {
-        let refined = coarse_evaluate_angles(&poly, &refinement_angles, coarse_steps, options.max_ratio);
+        let refined = coarse_evaluate_angles(&poly, &refinement_angles, coarse_steps, options.max_ratio, options.min_ratio);
         candidates.extend(refined);
     }
 
@@ -907,12 +1038,13 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
 
     if options.use_simulated_annealing {
         let seed_n = candidates.len().min(options.top_k.max(6));
-        let sa_candidates = run_simulated_annealing_candidates(&poly, &candidates[..seed_n], options.max_ratio);
+        let sa_candidates = run_simulated_annealing_candidates(&poly, &candidates[..seed_n], options.max_ratio, options.min_ratio, coarse_steps);
         candidates.extend(sa_candidates);
         candidates.sort_by(|a, b| b.area.partial_cmp(&a.area).unwrap_or(std::cmp::Ordering::Equal));
         let mut seen_sa: Vec<f64> = Vec::new();
+        // Wider dedup tolerance for SA: allow candidates within 2.0° to survive dedup
         candidates.retain(|c| {
-            if seen_sa.iter().any(|&s| (c.angle - s).abs() < 0.75) {
+            if seen_sa.iter().any(|&s| (c.angle - s).abs() < 2.0) {
                 false
             } else {
                 seen_sa.push(c.angle);
@@ -932,6 +1064,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                 &poly,
                 cand,
                 options.max_ratio,
+                options.min_ratio,
                 options.always_return,
                 options.field_max_coords,
                 options.cert_eps,
@@ -956,7 +1089,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
             .filter(|a| *a >= 0.0 && *a <= 90.0)
             .collect();
         if !polish_angles.is_empty() {
-            let polished = coarse_evaluate_angles(&poly, &polish_angles, coarse_steps.max(16), options.max_ratio);
+            let polished = coarse_evaluate_angles(&poly, &polish_angles, coarse_steps.max(16), options.max_ratio, options.min_ratio);
             let polished_results: Vec<Option<LirOrientedResult>> = polished
                 .iter()
                 .map(|cand| {
@@ -964,6 +1097,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                         &poly,
                         cand,
                         options.max_ratio,
+                        options.min_ratio,
                         options.always_return,
                         options.field_max_coords,
                         options.cert_eps,
@@ -978,6 +1112,162 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
             {
                 if polished_best.area > best.area {
                     best = polished_best;
+                }
+            }
+        }
+    }
+
+    if options.use_bootstrap_seeds {
+        let angle = best.angle_deg;
+        let rc = rotate_coords_only(&poly, angle);
+        let baseline_rect_rot = candidates
+            .iter()
+            .min_by(|a, b| {
+                (a.angle - angle)
+                    .abs()
+                    .partial_cmp(&(b.angle - angle).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|c| c.rect_rot);
+        let snapped = vertex_snapped_valid_candidate(
+            &rc,
+            angle,
+            options.max_ratio,
+            options.min_ratio,
+            options.field_max_coords,
+        );
+
+        let mut seed_rect = baseline_rect_rot;
+        let mut continue_to_center_seed = true;
+
+        // 1) Vertex-snapped family first. Proceed only when invalid or too low.
+        if let Some(snapped_cand) = snapped {
+            seed_rect = Some(snapped_cand.rect_rot);
+            if let Some(res) = fine_solve_candidate(
+                &poly,
+                &snapped_cand,
+                options.max_ratio,
+                options.min_ratio,
+                options.always_return,
+                options.field_max_coords,
+                options.cert_eps,
+                options.cert_max_shrink,
+            ) {
+                if res.area > best.area {
+                    best = res;
+                    continue_to_center_seed = false;
+                }
+            }
+        }
+
+        // 2) Same-angle center candidate from seed rectangle.
+        if continue_to_center_seed {
+            if let Some((x0, y0, x1, y1)) = seed_rect {
+                let cx = (x0 + x1) * 0.5;
+                let cy = (y0 + y1) * 0.5;
+                if let Some((center_seed, _)) = candidate_from_cross_rays_rotated(
+                    &rc,
+                    cx,
+                    cy,
+                    angle,
+                    options.max_ratio,
+                    options.min_ratio,
+                ) {
+                    if let Some(res) = fine_solve_candidate(
+                        &poly,
+                        &center_seed,
+                        options.max_ratio,
+                        options.min_ratio,
+                        options.always_return,
+                        options.field_max_coords,
+                        options.cert_eps,
+                        options.cert_max_shrink,
+                    ) {
+                        if res.area > best.area {
+                            best = res;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3) Separate last check: unconstrained-center proposal.
+        if let Some(unconstrained_seed) = center_seed_from_unconstrained_rect(
+            &rc,
+            angle,
+            options.max_ratio,
+            options.min_ratio,
+            best.area,
+        ) {
+            if let Some(res) = fine_solve_candidate(
+                &poly,
+                &unconstrained_seed,
+                options.max_ratio,
+                options.min_ratio,
+                options.always_return,
+                options.field_max_coords,
+                options.cert_eps,
+                options.cert_max_shrink,
+            ) {
+                if res.area > best.area {
+                    best = res;
+                }
+            }
+        }
+    }
+
+    if options.use_edge_anchored {
+        let mut test_angles: Vec<f64> = Vec::new();
+
+        let edge_angles = super::candidates::edge_candidate_angles(&poly, 8.0, 6);
+        test_angles.extend(edge_angles.clone());
+
+        let current_angle = best.angle_deg;
+        for delta in &[-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
+            let a = current_angle + delta;
+            if a >= 0.0 && a <= 90.0 && !test_angles.iter().any(|&x| (x - a).abs() < 1.0) {
+                test_angles.push(a);
+            }
+        }
+
+        let edge_results: Vec<Option<LirOrientedResult>> = test_angles
+            .par_iter()
+            .map(|&test_angle| {
+                let edge_candidates = super::edge_anchor::generate_edge_anchored_candidates(
+                    &poly,
+                    test_angle,
+                    options,
+                );
+
+                let mut local_best: Option<LirOrientedResult> = None;
+                for edge_cand in edge_candidates {
+                    if let Some(res) = fine_solve_candidate(
+                        &poly,
+                        &Candidate {
+                            angle: edge_cand.angle,
+                            area: edge_cand.area,
+                            rect_rot: edge_cand.rect_rot,
+                        },
+                        options.max_ratio,
+                        options.min_ratio,
+                        options.always_return,
+                        options.field_max_coords,
+                        options.cert_eps,
+                        options.cert_max_shrink,
+                    ) {
+                        if local_best.is_none() || res.area > local_best.as_ref().unwrap().area {
+                            local_best = Some(res);
+                        }
+                    }
+                }
+                local_best
+            })
+            .collect();
+
+        for res_opt in edge_results {
+            if let Some(res) = res_opt {
+                if res.area > best.area {
+                    best = res;
                 }
             }
         }
@@ -1068,6 +1358,27 @@ mod tests {
         opts.use_simulated_annealing = true;
         let r = solve_lir_oriented_parallel(&poly, &opts).unwrap();
         assert!(r.area > 10.0, "area={}", r.area);
+        assert!(r.rect_polygon.is_some());
+    }
+
+    #[test]
+    fn parallel_with_bootstrap_seeds() {
+        let poly = Polygon::new(
+            LineString::from(vec![
+                coord! {x:0.0,y:0.0},
+                coord! {x:14.0,y:0.0},
+                coord! {x:14.0,y:3.0},
+                coord! {x:6.0,y:3.0},
+                coord! {x:6.0,y:10.0},
+                coord! {x:0.0,y:10.0},
+                coord! {x:0.0,y:0.0},
+            ]),
+            vec![],
+        );
+        let mut opts = LirOrientedOptions::default();
+        opts.use_bootstrap_seeds = true;
+        let r = solve_lir_oriented_parallel(&poly, &opts).unwrap();
+        assert!(r.area > 30.0, "area={}", r.area);
         assert!(r.rect_polygon.is_some());
     }
 }

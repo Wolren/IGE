@@ -57,8 +57,10 @@ pub struct IgeOptions {
     pub prefer_gpu: c_int,
     pub force_cpu: c_int,
     pub max_aspect_ratio: c_double,
+    pub min_aspect_ratio: c_double,
     pub use_parallel_field: c_int,
     pub use_simulated_annealing: c_int,
+    pub use_bootstrap_seeds: c_int,
     pub use_pca_axes: c_int,
     pub use_multi_center: c_int,
     pub use_early_stopping: c_int,
@@ -71,8 +73,10 @@ impl Default for IgeOptions {
             prefer_gpu: 1,
             force_cpu: 0,
             max_aspect_ratio: 0.0,
+            min_aspect_ratio: 0.0,
             use_parallel_field: 0,
             use_simulated_annealing: 0,
+            use_bootstrap_seeds: 0,
             use_pca_axes: 0,
             use_multi_center: 0,
             use_early_stopping: 0,
@@ -87,18 +91,161 @@ impl Default for IgeOptions {
 #[derive(Clone, Copy)]
 pub struct IgeAxisAlignedOptions {
     pub max_aspect_ratio: c_double,
+    pub min_aspect_ratio: c_double,
 }
 
 impl Default for IgeAxisAlignedOptions {
     fn default() -> Self {
-        Self { max_aspect_ratio: 0.0 }
+        Self { max_aspect_ratio: 0.0, min_aspect_ratio: 0.0 }
     }
 }
 
 impl From<IgeAxisAlignedOptions> for AxisAlignedOptions {
     fn from(opts: IgeAxisAlignedOptions) -> Self {
-        AxisAlignedOptions { max_ratio: opts.max_aspect_ratio, max_grid: 51 }
+        AxisAlignedOptions { max_ratio: opts.max_aspect_ratio, min_ratio: opts.min_aspect_ratio, max_grid: 51 }
     }
+}
+
+// ─── LER solver (placeholder) ─────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IgeLerOptions {
+    pub max_aspect_ratio: c_double,
+    pub min_aspect_ratio: c_double,
+    pub grid_coarse: usize,
+    pub top_k: usize,
+    pub always_return: c_int,
+}
+
+impl Default for IgeLerOptions {
+    fn default() -> Self {
+        Self {
+            max_aspect_ratio: 0.0,
+            min_aspect_ratio: 0.0,
+            grid_coarse: 60,
+            top_k: 5,
+            always_return: 1,
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ige_ler_options_default() -> IgeLerOptions {
+    IgeLerOptions::default()
+}
+
+// ─── Nesting solver (placeholder) ─────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IgeNestingOptions {
+    pub max_aspect_ratio: c_double,
+    pub min_aspect_ratio: c_double,
+    pub max_vertices: usize,
+    pub grid_coarse: usize,
+    pub prefer_convex: c_int,
+}
+
+impl Default for IgeNestingOptions {
+    fn default() -> Self {
+        Self {
+            max_aspect_ratio: 0.0,
+            min_aspect_ratio: 0.0,
+            max_vertices: 100,
+            grid_coarse: 60,
+            prefer_convex: 1,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct IgeNestingResult {
+    pub area: c_double,
+    pub fill_ratio: c_double,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ige_nesting_options_default() -> IgeNestingOptions {
+    IgeNestingOptions::default()
+}
+
+// ─── LER + LIR solver (placeholder) ───────────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IgeLerLirOptions {
+    pub max_aspect_ratio: c_double,
+    pub min_aspect_ratio: c_double,
+    pub grid_coarse: usize,
+    pub top_k: usize,
+    pub always_return: c_int,
+    pub axis_aligned_only: c_int,
+}
+
+impl Default for IgeLerLirOptions {
+    fn default() -> Self {
+        Self {
+            max_aspect_ratio: 0.0,
+            min_aspect_ratio: 0.0,
+            grid_coarse: 60,
+            top_k: 5,
+            always_return: 1,
+            axis_aligned_only: 0,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct IgeLerLirResult {
+    pub lir_area: c_double,
+    pub ler_area: c_double,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ige_ler_lir_options_default() -> IgeLerLirOptions {
+    IgeLerLirOptions::default()
+}
+
+// ─── OBB solver (placeholder) ─────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IgeObbOptions {
+    pub max_aspect_ratio: c_double,
+    pub min_aspect_ratio: c_double,
+    pub angle_samples: usize,
+    pub use_pca: c_int,
+    pub use_refinement: c_int,
+    pub xatol_deg: c_double,
+}
+
+impl Default for IgeObbOptions {
+    fn default() -> Self {
+        Self {
+            max_aspect_ratio: 0.0,
+            min_aspect_ratio: 0.0,
+            angle_samples: 90,
+            use_pca: 1,
+            use_refinement: 1,
+            xatol_deg: 0.1,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct IgeObbResult {
+    pub area: c_double,
+    pub angle_deg: c_double,
+    pub width: c_double,
+    pub height: c_double,
+    pub aspect_ratio: c_double,
+    pub fill_ratio: c_double,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn ige_obb_options_default() -> IgeObbOptions {
+    IgeObbOptions::default()
 }
 
 fn mic_engine_from_raw(value: c_int) -> MicEngine {
@@ -314,8 +461,10 @@ pub unsafe extern "C" fn ige_solve(
     };
     let mut lir_opts = LirOrientedOptions::default();
     lir_opts.max_ratio = opts.max_aspect_ratio;
+    lir_opts.min_ratio = opts.min_aspect_ratio;
     lir_opts.use_parallel_field = opts.use_parallel_field != 0;
     lir_opts.use_simulated_annealing = opts.use_simulated_annealing != 0;
+    lir_opts.use_bootstrap_seeds = opts.use_bootstrap_seeds != 0;
     lir_opts.use_pca_axes = opts.use_pca_axes != 0;
     lir_opts.use_multi_center = opts.use_multi_center != 0;
     lir_opts.use_early_stopping = opts.use_early_stopping != 0;
