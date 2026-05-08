@@ -1,0 +1,18 @@
+# Summary
+
+- [Getting Started](getting-started/index.md)
+  - [Installation](getting-started/installation.md)
+- [Algorithms](algorithms/index.md)
+  - [Oriented LIR](algorithms/oriented-lir.md)
+  - [Axis-Aligned LIR](algorithms/axis-aligned-lir.md)
+  - [Maximum Inscribed Circle](algorithms/mic.md)
+- [Theory](theory/index.md)
+  - [Complexity](theory/complexity.md)
+  - [Mathematical Foundations](theory/math-foundations.md)
+- [Performance](performance/index.md)
+  - [Benchmarks](performance/benchmarks.md)
+- [Developer Reference](dev-reference/index.md)
+  - [Solver Parameters](dev-reference/parameters.md)
+  - [Folder Layout](dev-reference/folder-layout.md)
+  - [Using Bindings](dev-reference/bindings.md)
+- [API Reference](api/src/SUMMARY.md)

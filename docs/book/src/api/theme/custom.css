@@ -1,0 +1,7 @@
+/* Hide chapter numbering for reference documentation sections only.
+   Scoped to python/ and rust/ paths to avoid affecting other documentation.
+   Uses *= (contains) since mdbook prepends path_to_root to hrefs. */
+.chapter-item a[href*="python/"] strong[aria-hidden="true"],
+.chapter-item a[href*="rust/"] strong[aria-hidden="true"] {
+    display: none !important;
+}

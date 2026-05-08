@@ -1,0 +1,53 @@
+name: Deploy Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'crates/**'
+      - 'plissken.toml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'plissken.toml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdbook
+        run: cargo install mdbook
+
+      - name: Install plissken
+        run: cargo install plissken
+
+      - name: Generate API docs
+        run: |
+          plissken generate
+          plissken render
+
+      - name: Build book
+        run: mdbook build docs/book
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: docs/book/build
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

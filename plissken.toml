@@ -1,0 +1,15 @@
+[project]
+name = "IGE"
+version_from = "cargo"
+
+[output]
+format = "markdown"
+path = "docs/book/src/api"
+template = "mdbook"
+
+[rust]
+crates = ["crates/ige-core"]
+
+[python]
+package = "ige"
+source = "crates/ige-py"
