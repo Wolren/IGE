@@ -4,6 +4,3 @@ src = "src"
 
 [output.html]
 mathjax-support = true
-
-[preprocessor.mermaid]
-command = "mdbook-mermaid"
