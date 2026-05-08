@@ -37,7 +37,7 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/master'
         with:
-          path: docs/book/build
+          path: docs/book/book
 
   deploy:
     needs: build
