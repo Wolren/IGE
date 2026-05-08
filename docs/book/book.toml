@@ -3,4 +3,4 @@ title = "IGE"
 src = "src"
 
 [output.html]
-mathjax-support = true
+mathjax-support = false
