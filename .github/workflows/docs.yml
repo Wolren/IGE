@@ -2,7 +2,7 @@ name: Deploy Documentation
 
 on:
   push:
-    branches: [main]
+    branches: [main, docs/mdbook-plissken]
     paths:
       - 'docs/**'
       - 'crates/**'
@@ -11,6 +11,7 @@ on:
     paths:
       - 'docs/**'
       - 'plissken.toml'
+  workflow_dispatch:
 
 jobs:
   build:
