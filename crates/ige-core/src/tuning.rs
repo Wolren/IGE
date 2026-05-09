@@ -7,7 +7,7 @@
 //! Ranges after each constant show reasonable min/max for OpenEvolve evolution.
 
 // -- LIR Oriented standard pipeline (lir_oriented/mod.rs) --
-pub const GRID_COARSE: usize = 400;
+pub const GRID_COARSE: usize = 32;
 pub const GRID_FINE: usize = 64;
 pub const TOP_K: usize = 20;
 pub const POLISH_HALFWIDTH: f64 = 3.0;

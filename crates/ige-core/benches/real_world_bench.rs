@@ -3,6 +3,10 @@
 //! Run: `cargo bench --package ige-core --test real_world`
 //! Run all: `cargo bench --package ige-core`
 
+#[cfg(feature = "dhat")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use geo::Area;
 use geo_types::{Coord, LineString, Polygon};

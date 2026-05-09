@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use self::input::HostPolygon;
 use self::solver::exact::solve_exact;
+use self::solver::grid::solve_grid;
 use self::workspace::MicWorkspace;
 
 /// Engine selection for MIC solving.
@@ -52,6 +53,7 @@ impl Default for MicOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MicUsedEngine {
     Exact,
+    Grid,
     GeosFallback,
 }
 
@@ -88,7 +90,7 @@ pub enum MicError {
 pub fn maximum_inscribed_circle(
     poly: &Polygon<f64>,
     opts: &MicOptions,
-) -> std::result::Result<MicResult, MicError> {
+) -> Result<MicResult, MicError> {
     let host = HostPolygon::from_polygon(poly)?;
     solve_on_host_polygon(&host, opts)
 }
@@ -100,7 +102,7 @@ pub fn maximum_inscribed_circle(
 pub fn maximum_inscribed_circle_with_workspace(
     workspace: &mut MicWorkspace,
     opts: &MicOptions,
-) -> std::result::Result<MicResult, MicError> {
+) -> Result<MicResult, MicError> {
     solve_exact(workspace, opts).map_err(|err| MicError::ExactFailed(err.to_string()))
 }
 
@@ -108,7 +110,7 @@ pub fn maximum_inscribed_circle_with_workspace(
 pub fn maximum_inscribed_circle_multipolygon(
     multi: &MultiPolygon<f64>,
     opts: &MicOptions,
-) -> std::result::Result<MicResult, MicError> {
+) -> Result<MicResult, MicError> {
     if multi.0.is_empty() {
         return Err(MicError::InvalidInput("multipolygon has no components".to_string()));
     }
@@ -140,20 +142,21 @@ pub fn maximum_inscribed_circle_multipolygon(
 fn solve_on_host_polygon(
     host: &HostPolygon,
     opts: &MicOptions,
-) -> std::result::Result<MicResult, MicError> {
-    // Phase 0: Analytical fast paths — exact O(1), no workspace needed.
-    // Verification: compute the true nearest-boundary distance and compare.
-    // Reject if the analytical result is not within 1% of the true distance
-    // (catches degenerate inputs that match ring-length checks but are not
-    // valid triangles/quads — e.g., repeated vertices, near-zero areas).
-    if opts.engine == MicEngine::ExactOnly || opts.engine == MicEngine::ExactThenGeos {
+) -> Result<MicResult, MicError> {
+    // Phase 0: Try analytical fast path for simple shapes (triangle, convex quad)
+    if opts.engine != MicEngine::FallbackOnly && host.ring_count() == 1 {
+        let outer_len = host.outer_ring().len();
         'fast: {
-            let result = if let Some(r) = self::solver::exact::fast_triangle(host) { r }
-            else if let Some(r) = self::solver::exact::fast_convex_quad(host) { r }
-            else { break 'fast; };
+            // fast_triangle needs outer.len() == 4 (3 vertices + closing)
+            // fast_convex_quad needs outer.len() == 5 (4 vertices + closing)
+            let result = if outer_len == 4 { solver::exact::fast_triangle(host) }
+            else if outer_len == 5 { solver::exact::fast_convex_quad(host) }
+            else { None };
+            if result.is_none() { break 'fast; }
+            let result = result.unwrap();
 
             // Verify: compute exact nearest-boundary distance via linear scan
-            let seg_idx = crate::solvers::mic::input::SegmentIndex::from_host(host);
+            let seg_idx = input::SegmentIndex::from_host(host);
             let mut actual_sq = f64::INFINITY;
             for idx in 0..seg_idx.len() {
                 let d = seg_idx.point_segment_distance_sq(idx, result.center.x(), result.center.y());
@@ -163,6 +166,22 @@ fn solve_on_host_polygon(
             if actual > 0.0 && (result.radius - actual).abs() / actual < 0.01 {
                 return Ok(result);
             }
+        }
+    }
+
+    // Phase 1: Use grid solver for complex shapes - matches GEOS exactly and is much faster
+    // Skip for FallbackOnly - let GEOS solve independently for comparison
+    let use_grid = opts.engine != MicEngine::FallbackOnly;
+    
+    if use_grid {
+        // Use grid solver - now uses original polygon (no normalization)
+        let workspace = MicWorkspace::new(host.clone())?;
+        let bounds = host.bounds().unwrap_or((0.0, 0.0, 1.0, 1.0));
+        let diag = (bounds.2 - bounds.0).hypot(bounds.3 - bounds.1).max(1.0);
+        let tolerance = (diag * 1e-7).max(1e-12);
+
+        if let Some(grid_result) = solve_grid(host, &workspace.pip_index, &workspace.nb_index, tolerance) {
+            return Ok(grid_result);
         }
     }
 
@@ -202,16 +221,16 @@ fn solve_on_host_polygon(
 fn run_exact(
     host: &HostPolygon,
     opts: &MicOptions,
-) -> std::result::Result<MicResult, MicError> {
+) -> Result<MicResult, MicError> {
     let mut workspace = MicWorkspace::new(host.clone())?;
     solve_exact(&mut workspace, opts).map_err(|err| MicError::ExactFailed(err.to_string()))
 }
 
 fn run_geos(
     host: &HostPolygon,
-    existing_seg_index: Option<&crate::solvers::mic::input::SegmentIndex>,
+    existing_seg_index: Option<&input::SegmentIndex>,
     opts: &MicOptions,
-) -> std::result::Result<MicResult, MicError> {
+) -> Result<MicResult, MicError> {
     #[cfg(feature = "geos")]
     {
         self::solver::geos_fallback::solve_with_geos(host, opts, existing_seg_index)

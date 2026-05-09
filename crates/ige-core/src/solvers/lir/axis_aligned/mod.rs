@@ -39,10 +39,10 @@ impl Default for AxisAlignedSolver {
 impl AxisAlignedSolver {
     pub fn solve(&self, poly: &geo_types::Polygon<f64>, options: &AxisAlignedOptions) -> Option<crate::shared::Rectangle> {
         match self {
-            AxisAlignedSolver::VertexGrid => vertex_grid::solve_vertex_grid(poly, options),
-            AxisAlignedSolver::Exact => exact::solve_axis_exact(poly, options),
+            AxisAlignedSolver::VertexGrid => solve_vertex_grid(poly, options),
+            AxisAlignedSolver::Exact => solve_axis_exact(poly, options),
             AxisAlignedSolver::UniformGrid => {
-                let result = grid::solve_axis_rect_grid(poly, options.max_grid, options.max_ratio, options.min_ratio)?;
+                let result = solve_axis_rect_grid(poly, options.max_grid, options.max_ratio, options.min_ratio)?;
                 Some(crate::shared::Rectangle {
                     x_min: result.0,
                     y_min: result.1,

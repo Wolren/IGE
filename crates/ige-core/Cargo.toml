@@ -16,7 +16,11 @@ name = "lir_axis_aligned_bench"
 harness = false
 
 [[bench]]
-name = "real_world"
+name = "ler_axis_aligned_bench"
+harness = false
+
+[[bench]]
+name = "real_world_bench"
 harness = false
 
 [[bench]]
@@ -24,7 +28,7 @@ name = "lir_oriented_bench"
 harness = false
 
 [[bench]]
-name = "mic"
+name = "mic_bench"
 harness = false
 
 [dependencies]
@@ -41,6 +45,7 @@ anyhow = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
+criterion = "0.8.2"
 
 [[example]]
 name = "run_all"
@@ -51,9 +56,8 @@ name = "visualize"
 path = "demos/visualize.rs"
 
 [dev-dependencies]
-criterion = { workspace = true }
-approx = "0.5"
 serde_json = "1.0"
+dhat = "0.3"
 
 [features]
 default = ["cpu"]
@@ -61,3 +65,5 @@ serde = ["dep:serde", "geo/serde"]
 cpu = []
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:anyhow"]
 geos = ["dep:geos"]
+simd = []
+dhat = []

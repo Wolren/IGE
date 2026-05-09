@@ -1,15 +1,40 @@
 use geos::{Geom, Geometry};
+use geo_types::Polygon;
 
 use super::super::index::NearestBoundaryIndex;
 use super::super::input::{HostPolygon, SegmentIndex};
 use super::super::{MicError, MicOptions, MicResult, MicUsedEngine, RobustMode};
+
+fn polygon_to_wkt(poly: &Polygon<f64>) -> String {
+    let mut out = String::from("POLYGON (");
+    let ext = poly.exterior();
+    out.push('(');
+    for (idx, coord) in ext.0.iter().enumerate() {
+        if idx > 0 { out.push_str(", "); }
+        out.push_str(&format!("{} {}", coord.x, coord.y));
+    }
+    out.push(')');
+    for hole in poly.interiors() {
+        out.push_str(", ");
+        out.push('(');
+        for (idx, coord) in hole.0.iter().enumerate() {
+            if idx > 0 { out.push_str(", "); }
+            out.push_str(&format!("{} {}", coord.x, coord.y));
+        }
+        out.push(')');
+    }
+    out.push(')');
+    out
+}
 
 pub fn solve_with_geos(
     host: &HostPolygon,
     opts: &MicOptions,
     existing_seg_index: Option<&SegmentIndex>,
 ) -> std::result::Result<MicResult, MicError> {
-    let poly_wkt = host_polygon_to_wkt(host);
+    // Use ORIGINAL polygon (not normalized) for GEOS to avoid the bug where 
+    // normalization breaks certain polygons and causes wrong MIC results
+    let poly_wkt = polygon_to_wkt(&host.original_polygon);
     let geom = Geometry::new_from_wkt(&poly_wkt)
         .map_err(|err| MicError::GeosFailed(format!("failed to build GEOS polygon: {err}")))?;
 

@@ -62,8 +62,6 @@ pub struct IgeOptions {
     pub use_simulated_annealing: c_int,
     pub use_bootstrap_seeds: c_int,
     pub use_pca_axes: c_int,
-    pub use_multi_center: c_int,
-    pub use_early_stopping: c_int,
 }
 
 impl Default for IgeOptions {
@@ -78,8 +76,6 @@ impl Default for IgeOptions {
             use_simulated_annealing: 0,
             use_bootstrap_seeds: 0,
             use_pca_axes: 0,
-            use_multi_center: 0,
-            use_early_stopping: 0,
         }
     }
 }
@@ -269,6 +265,7 @@ fn used_engine_to_raw(value: MicUsedEngine) -> c_int {
     match value {
         MicUsedEngine::Exact => 0,
         MicUsedEngine::GeosFallback => 1,
+        MicUsedEngine::Grid => 2,
     }
 }
 
@@ -466,8 +463,6 @@ pub unsafe extern "C" fn ige_solve(
     lir_opts.use_simulated_annealing = opts.use_simulated_annealing != 0;
     lir_opts.use_bootstrap_seeds = opts.use_bootstrap_seeds != 0;
     lir_opts.use_pca_axes = opts.use_pca_axes != 0;
-    lir_opts.use_multi_center = opts.use_multi_center != 0;
-    lir_opts.use_early_stopping = opts.use_early_stopping != 0;
 
     let solve_result = solve_lir_oriented(&working_polygon, &lir_opts);
     match solve_result {

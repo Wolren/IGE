@@ -267,7 +267,7 @@ pub fn fast_convex_quad(host: &HostPolygon) -> Option<MicResult> {
         if !cx.is_finite() || !cy.is_finite() { continue; }
         let mut ok = true;
         for k in 0..4 {
-            if nx[k]*cx + ny[k]*cy - line_c[k] <= 0.0 { ok = false; break; }
+            if nx[k]*cx + ny[k]*cy - line_c[k] < 0.0 { ok = false; break; }
         }
         if !ok { continue; }
         let r2 = nx[0]*cx + ny[0]*cy - line_c[0];

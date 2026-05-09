@@ -3,6 +3,10 @@
 //! Run: `cargo bench --package ige-core --test lir_axis_aligned_bench`
 //! Run all: `cargo bench --package ige-core`
 
+#[cfg(feature = "dhat")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use geo_types::{Coord, LineString, Polygon};
 use ige_core::{

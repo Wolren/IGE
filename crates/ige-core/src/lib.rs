@@ -1,5 +1,7 @@
 //! Inscribed Geometry Engine (IGE) - Largest Inscribed Rectangle algorithms
 
+#![cfg_attr(feature = "simd", feature(portable_simd))]
+
 pub mod algorithms;
 pub mod shared;
 pub mod tuning;
@@ -8,6 +10,7 @@ pub mod solvers;
 
 #[cfg(feature = "gpu")]
 pub mod gpu;
+mod prelude;
 
 pub use algorithms::LirSolver;
 
@@ -56,5 +59,5 @@ pub fn solve_oriented_lir(poly: &Polygon<f64>) -> Option<Rectangle> {
 }
 
 pub fn solve_axis_aligned(poly: &Polygon<f64>, options: &AxisAlignedOptions) -> Option<Rectangle> {
-    solvers::lir::axis_aligned::solve_vertex_grid(poly, options)
+    solve_vertex_grid(poly, options)
 }

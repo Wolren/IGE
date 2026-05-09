@@ -3,6 +3,10 @@
 //! Run: cargo bench --package ige-core --features geos -- mic
 //! Then open target/criterion/mic*/report/index.html in a browser.
 
+#[cfg(feature = "dhat")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use geo_types::{Coord, LineString, Polygon};
 use ige_core::solvers::mic::{maximum_inscribed_circle, MicEngine, MicOptions, RobustMode};

@@ -3,13 +3,10 @@
 //! Port of `_edge_candidate_angles` and `_upper_bound_area` from `bcrs_fast_worker.py`.
 
 use geo::{BoundingRect, Rotate};
-use geo_types::Point;
-
-#[cfg(test)]
-use geo_types::Polygon;
+use geo_types::{Point, Polygon};
 
 pub fn edge_candidate_angles(
-    poly: &geo_types::Polygon<f64>,
+    poly: &Polygon<f64>,
     min_sep_deg: f64,
     max_candidates: usize,
 ) -> Vec<f64> {
@@ -94,7 +91,7 @@ pub fn edge_candidate_angles(
 /// Computes the covariance matrix of polygon vertices and extracts the
 /// primary (longest) and secondary axes via eigendecomposition of the 2x2 covariance.
 /// Returns angles (in degrees, 0-90) corresponding to these axes.
-pub fn pca_candidate_angles(poly: &geo_types::Polygon<f64>) -> Vec<f64> {
+pub fn pca_candidate_angles(poly: &Polygon<f64>) -> Vec<f64> {
     let coords: Vec<_> = poly
         .exterior()
         .0
@@ -134,24 +131,24 @@ pub fn pca_candidate_angles(poly: &geo_types::Polygon<f64>) -> Vec<f64> {
     // det = cov_xx * cov_yy - cov_xy²
     // trace = cov_xx + cov_yy
     // λ = (trace ± sqrt(trace² - 4*det)) / 2
-    let trace = cov_xx + cov_yy;
-    let det = cov_xx * cov_yy - cov_xy * cov_xy;
-    let discriminant = trace * trace - 4.0 * det;
+    let trace: f64 = cov_xx + cov_yy;
+    let det: f64 = cov_xx * cov_yy - cov_xy * cov_xy;
+    let discriminant: f64 = trace * trace - 4.0 * det;
 
-    if discriminant < 0.0 {
+    if discriminant < 0.0_f64 {
         return vec![];
     }
 
     let sqrt_disc = discriminant.sqrt();
-    let lambda_1 = (trace + sqrt_disc) / 2.0;
-    let lambda_2 = (trace - sqrt_disc) / 2.0;
+    let lambda_1: f64 = (trace + sqrt_disc) / 2.0;
+    let lambda_2: f64 = (trace - sqrt_disc) / 2.0;
 
     let mut angles = Vec::new();
 
     // Eigenvector for λ_1 (primary axis)
     if lambda_1.abs() > 1e-12 {
-        let v1x = cov_xy;
-        let v1y = lambda_1 - cov_xx;
+        let v1x: f64 = cov_xy;
+        let v1y: f64 = lambda_1 - cov_xx;
         if v1x.abs() > 1e-12 || v1y.abs() > 1e-12 {
             let angle1 = v1y.atan2(v1x).to_degrees().abs() % 90.0;
             angles.push(angle1);
@@ -160,8 +157,8 @@ pub fn pca_candidate_angles(poly: &geo_types::Polygon<f64>) -> Vec<f64> {
 
     // Eigenvector for λ_2 (secondary axis)
     if lambda_2.abs() > 1e-12 {
-        let v2x = cov_xy;
-        let v2y = lambda_2 - cov_xx;
+        let v2x: f64 = cov_xy;
+        let v2y: f64 = lambda_2 - cov_xx;
         if v2x.abs() > 1e-12 || v2y.abs() > 1e-12 {
             let angle2 = v2y.atan2(v2x).to_degrees().abs() % 90.0;
             angles.push(angle2);
@@ -187,7 +184,7 @@ pub fn pca_candidate_angles(poly: &geo_types::Polygon<f64>) -> Vec<f64> {
 }
 
 pub fn upper_bound_area(
-    hull: &geo_types::Polygon<f64>,
+    hull: &Polygon<f64>,
     angle_deg: f64,
     max_ratio: f64,
     centroid: Point<f64>,

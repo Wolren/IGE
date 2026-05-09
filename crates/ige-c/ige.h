@@ -38,8 +38,6 @@ typedef struct {
     int use_simulated_annealing;   ///< Enable SA basin-escape search (1=yes, 0=no)
     int use_bootstrap_seeds;       ///< Enable deterministic bootstrap multi-seed stage (1=yes, 0=no)
     int use_pca_axes;              ///< Enable PCA-guided angle candidates (1=yes, 0=no)
-    int use_multi_center;          ///< Enable multi-center evaluation per angle (1=yes, 0=no)
-    int use_early_stopping;        ///< Enable early stopping when top-k stabilizes (1=yes, 0=no)
 } IgeOptions;
 
 /**

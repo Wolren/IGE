@@ -2,10 +2,14 @@
 //!
 //! Run: `cargo bench --package ige-core --test ler_axis_aligned_bench`
 
+#[cfg(feature = "dhat")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 use geo_types::{coord, LineString, Polygon};
 use ige_core::solvers::ler::axis_aligned::solve_ler_axis_aligned_exact;
-use ige_core::solvers::ler::{LerOptions, LerResult};
+use ige_core::solvers::ler::LerOptions;
 
 fn rp(x0: f64, y0: f64, x1: f64, y1: f64) -> Polygon<f64> {
     Polygon::new(

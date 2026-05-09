@@ -80,11 +80,11 @@ impl Default for LerResult {
 /// # Returns
 /// A `LerResult` with the largest empty rectangle.
 pub fn solve_ler_axis_aligned(
-    _poly: &Polygon<f64>,
-    _obstacles: &[Polygon<f64>],
-    _options: &LerOptions,
+    poly: &Polygon<f64>,
+    obstacles: &[Polygon<f64>],
+    options: &LerOptions,
 ) -> Result<LerResult> {
-    Err(crate::shared::LirError::NotSupported("LER axis-aligned not yet implemented".to_string()))
+    super::ler::axis_aligned::solve_ler_axis_aligned_exact(poly, obstacles, options)
 }
 
 /// Solve largest empty rectangle with free orientation.

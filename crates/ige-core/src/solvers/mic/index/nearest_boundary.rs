@@ -115,6 +115,7 @@ impl GridIndex {
         dx * dx + dy * dy
     }
 
+    #[inline]
     fn nearest_via_grid(
         &self,
         segments: &SegmentIndex,
@@ -348,16 +349,24 @@ impl GridIndex {
     }
 }
 
+#[inline]
 fn linear_scan_nearest(
     segments: &SegmentIndex,
     x: f64,
     y: f64,
     start_seg: usize,
 ) -> Option<(f64, usize)> {
+    let n = segments.len();
+    if n >= 8 {
+        // Use SIMD batch for larger segment counts
+        let (d_sq, idx) = segments.batch_point_segment_distance_sq_with_index(x, y, start_seg, n);
+        return Some((d_sq, idx));
+    }
+
     let mut best_sq = f64::INFINITY;
     let mut best_idx = start_seg;
 
-    for seg_idx in 0..segments.len() {
+    for seg_idx in 0..n {
         let bbox_lb = point_to_bbox_distance_sq(
             x, y,
             segments.bbox_minx[seg_idx], segments.bbox_miny[seg_idx],
@@ -413,9 +422,20 @@ impl NearestBoundaryIndex {
         Self { segments, grid }
     }
 
+    #[inline]
     pub fn nearest_distance_sq(&self, x: f64, y: f64) -> Option<(f64, usize)> {
         if self.segments.is_empty() {
             return None;
+        }
+        let n = self.segments.len();
+        // Use SIMD batch when segment count is reasonable (faster than grid for small polygons)
+        #[cfg(feature = "simd")]
+        if n <= 256 {
+            return Some(self.segments.batch_point_segment_distance_sq_with_index(x, y, 0, n));
+        }
+        #[cfg(not(feature = "simd"))]
+        if n <= 32 {
+            return linear_scan_nearest(&self.segments, x, y, 0);
         }
         if self.grid.nx == 0 {
             return linear_scan_nearest(&self.segments, x, y, 0);

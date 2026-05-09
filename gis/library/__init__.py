@@ -229,8 +229,6 @@ def solve_bcrs(
     use_simulated_annealing: bool = False,
     use_bootstrap_seeds: bool = False,
     use_pca_axes: bool = False,
-    use_multi_center: bool = False,
-    use_early_stopping: bool = False,
 ) -> BcrsResult:
     """Find the largest oriented rectangle using BCRS (Boundary-Coordinate
     Rectangle Solve).
@@ -250,10 +248,6 @@ def solve_bcrs(
         (vertex-snapped valid seed + center-only promotion seeds).
     use_pca_axes : bool, optional
         Enable Principal Component Analysis for angle candidate guidance.
-    use_multi_center : bool, optional
-        Enable multi-center evaluation to find better offsets per angle.
-    use_early_stopping : bool, optional
-        Enable early stopping when top-k candidates stabilize.
 
     Returns
     -------
@@ -272,8 +266,6 @@ def solve_bcrs(
         use_simulated_annealing=use_simulated_annealing,
         use_bootstrap_seeds=use_bootstrap_seeds,
         use_pca_axes=use_pca_axes,
-        use_multi_center=use_multi_center,
-        use_early_stopping=use_early_stopping,
     )
     return BcrsResult(
         x_min=py_result.x_min,

@@ -95,16 +95,20 @@ fn rotate_coords_only(poly: &Polygon<f64>, angle_deg: f64) -> RotatedCoords {
 
     let ext: Vec<Coord<f64>> = poly.exterior().0.iter().map(|c| {
         let r = rotate(c);
-        if r.x < minx { minx = r.x } if r.x > maxx { maxx = r.x }
-        if r.y < miny { miny = r.y } if r.y > maxy { maxy = r.y }
+        if r.x < minx { minx = r.x }
+        if r.x > maxx { maxx = r.x }
+        if r.y < miny { miny = r.y }
+        if r.y > maxy { maxy = r.y }
         r
     }).collect();
 
     let holes: Vec<Vec<Coord<f64>>> = poly.interiors().iter().map(|ring| {
         ring.0.iter().map(|c| {
             let r = rotate(c);
-            if r.x < minx { minx = r.x } if r.x > maxx { maxx = r.x }
-            if r.y < miny { miny = r.y } if r.y > maxy { maxy = r.y }
+            if r.x < minx { minx = r.x }
+            if r.x > maxx { maxx = r.x }
+            if r.y < miny { miny = r.y }
+            if r.y > maxy { maxy = r.y }
             r
         }).collect()
     }).collect();
@@ -321,18 +325,6 @@ fn clamp_ratio_about_center(
     }
 }
 
-fn center_world_to_rot(center: Point<f64>, angle_deg: f64, origin: Point<f64>) -> (f64, f64) {
-    let rad = -angle_deg.to_radians();
-    let cos_a = rad.cos();
-    let sin_a = rad.sin();
-    let dx = center.x() - origin.x();
-    let dy = center.y() - origin.y();
-    (
-        origin.x() + dx * cos_a - dy * sin_a,
-        origin.y() + dx * sin_a + dy * cos_a,
-    )
-}
-
 fn cross_ray_clearances(
     rc: &RotatedCoords,
     cx: f64,
@@ -390,19 +382,6 @@ fn candidate_from_cross_rays_rotated(
     }
     let clearances = cross_ray_clearances(rc, cx, cy)?;
     candidate_from_clearances(angle_deg, cx, cy, clearances, max_ratio, min_ratio)
-}
-
-fn candidate_from_cross_rays(
-    poly: &Polygon<f64>,
-    center_world: Point<f64>,
-    angle_deg: f64,
-    max_ratio: f64,
-    min_ratio: f64,
-) -> Option<(Candidate, f64)> {
-    let rc = rotate_coords_only(poly, angle_deg);
-    let origin: Point<f64> = poly.centroid()?.into();
-    let (cx, cy) = center_world_to_rot(center_world, angle_deg, origin);
-    candidate_from_cross_rays_rotated(&rc, cx, cy, angle_deg, max_ratio, min_ratio)
 }
 
 fn vertex_snapped_valid_candidate(
@@ -502,42 +481,6 @@ fn center_seed_from_unconstrained_rect(
     }
 
     candidate_from_clearances(angle, cx, cy, clearances, max_ratio, min_ratio).map(|(c, _)| c)
-}
-
-/// Evaluate candidate at multiple center offsets and return the best.
-/// Tries: centroid, +/- offsets in cardinal directions at 5% diagonal.
-fn candidate_from_multi_centers(
-    poly: &Polygon<f64>,
-    angle_deg: f64,
-    max_ratio: f64,
-    min_ratio: f64,
-) -> Option<(Candidate, f64)> {
-    let centroid: Point<f64> = poly.centroid()?.into();
-    let bb = poly.bounding_rect()?;
-    let diag = ((bb.max().x - bb.min().x).powi(2) + (bb.max().y - bb.min().y).powi(2)).sqrt();
-
-    // Try centers: centroid + small offsets in cardinal directions
-    let offset_dist = diag * 0.05;  // 5% of diagonal
-    let center_offsets = vec![
-        (0.0, 0.0),           // centroid
-        (offset_dist, 0.0),   // right
-        (-offset_dist, 0.0),  // left
-        (0.0, offset_dist),   // up
-        (0.0, -offset_dist),  // down
-    ];
-
-    let mut best: Option<(Candidate, f64)> = None;
-
-    for (dx, dy) in center_offsets {
-        let center = Point::new(centroid.x() + dx, centroid.y() + dy);
-        if let Some((cand, score)) = candidate_from_cross_rays(poly, center, angle_deg, max_ratio, min_ratio) {
-            if best.is_none() || score > best.as_ref().unwrap().1 {
-                best = Some((cand, score));
-            }
-        }
-    }
-
-    best
 }
 
 /// Fast-path detector for near-rectangular shapes.
@@ -942,11 +885,6 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
     let mut evaluated_angles: Vec<f64> = Vec::new();
     let mut candidates: Vec<Candidate> = Vec::new();
 
-    // For early stopping: track top-k stability
-    let mut stable_count = 0usize;
-    let mut prev_top_hash = String::new();
-    let early_stop_threshold = 12usize;  // Stop after 12 angles with no improvement
-
     for (angle, ub) in ub_scored {
         if top_areas.len() >= top_needed {
             let mut kth_area = f64::INFINITY;
@@ -962,12 +900,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
 
         evaluated_angles.push(angle);
 
-        let c = if options.use_multi_center {
-            candidate_from_multi_centers(&poly, angle, options.max_ratio, options.min_ratio)
-                .map(|(cand, _)| cand)
-        } else {
-            coarse_evaluate_angle(&poly, angle, coarse_steps, options.max_ratio, options.min_ratio)
-        };
+        let c = coarse_evaluate_angle(&poly, angle, coarse_steps, options.max_ratio, options.min_ratio);
 
         if let Some(c) = c {
             let area = c.area;
@@ -987,23 +920,6 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                 }
             }
             candidates.push(c);
-
-            // Early stopping: check if top-k has stabilized
-            if options.use_early_stopping && top_areas.len() >= top_needed {
-                let mut sorted_tops = top_areas.clone();
-                sorted_tops.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-                let hash = format!("{:?}", sorted_tops);
-
-                if hash == prev_top_hash {
-                    stable_count += 1;
-                    if stable_count >= early_stop_threshold {
-                        break;  // Top-k hasn't changed for 12 angles, stop early
-                    }
-                } else {
-                    stable_count = 0;
-                    prev_top_hash = hash;
-                }
-            }
         }
     }
 
@@ -1219,7 +1135,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
     if options.use_edge_anchored {
         let mut test_angles: Vec<f64> = Vec::new();
 
-        let edge_angles = super::candidates::edge_candidate_angles(&poly, 8.0, 6);
+        let edge_angles = edge_candidate_angles(&poly, 8.0, 6);
         test_angles.extend(edge_angles.clone());
 
         let current_angle = best.angle_deg;

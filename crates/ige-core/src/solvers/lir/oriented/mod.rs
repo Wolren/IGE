@@ -49,12 +49,8 @@ pub struct LirOrientedOptions {
     pub use_bootstrap_seeds: bool,
     /// If true, use Principal Component Analysis to guide initial angle candidates.
     pub use_pca_axes: bool,
-    /// If true, evaluate multiple center offsets per angle for better basin exploration.
-    pub use_multi_center: bool,
     /// If true, generate edge-anchored candidates from boundary support relationships.
     pub use_edge_anchored: bool,
-    /// If true, use early stopping when top-k candidates stabilize.
-    pub use_early_stopping: bool,
     /// Half-width (degrees) for the Brent golden-section polish.
     pub polish_halwidth_deg: f64,
     /// Convergence tolerance for Brent polish (degrees).
@@ -93,9 +89,7 @@ impl Default for LirOrientedOptions {
             use_simulated_annealing: false,
             use_bootstrap_seeds: false,
             use_pca_axes: false,
-            use_multi_center: false,
             use_edge_anchored: false,
-            use_early_stopping: false,
             polish_halwidth_deg: crate::tuning::POLISH_HALFWIDTH,
             polish_xatol_deg: crate::tuning::POLISH_XATOL,
             prune_margin: crate::tuning::PRUNE_MARGIN,
@@ -180,7 +174,7 @@ pub(crate) struct AngleCandidate {
 /// # Returns
 /// A `LirOrientedResult` with the best rectangle (AABB in world frame), area, angle, etc.
 pub fn solve_lir_oriented(poly: &Polygon<f64>, options: &LirOrientedOptions) -> Result<LirOrientedResult> {
-    parallel::solve_lir_oriented_parallel(poly, options)
+    solve_lir_oriented_parallel(poly, options)
 }
 
 // ─── Worker entry point (compatible with Python signature) ─────────────────
@@ -209,9 +203,7 @@ pub fn worker_process_feature(
         use_simulated_annealing: false,
         use_bootstrap_seeds: false,
         use_pca_axes: false,
-        use_multi_center: false,
         use_edge_anchored: false,
-        use_early_stopping: false,
         polish_halwidth_deg: crate::tuning::POLISH_HALFWIDTH,
         polish_xatol_deg: crate::tuning::POLISH_XATOL,
         prune_margin: crate::tuning::PRUNE_MARGIN,

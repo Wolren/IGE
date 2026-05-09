@@ -92,9 +92,7 @@ class OrientedLirAlgorithm(QgsProcessingAlgorithm):
     USE_SA = "USE_SA"
     USE_BOOTSTRAP = "USE_BOOTSTRAP"
     USE_PCA = "USE_PCA"
-    USE_MULTI_CENTER = "USE_MULTI_CENTER"
     USE_EDGE_ANCHORED = "USE_EDGE_ANCHORED"
-    USE_EARLY_STOP = "USE_EARLY_STOP"
 
     def tr(self, text):
         return QCoreApplication.translate("Processing", text)
@@ -123,9 +121,7 @@ class OrientedLirAlgorithm(QgsProcessingAlgorithm):
             "  - Simulated annealing: rescue from local minima\n"
             "  - Bootstrap seeds: vertex-snapped + center seeds\n"
             "  - PCA axes: use principal component analysis\n"
-            "  - Multi-center: evaluate multiple center offsets\n"
-            "  - Edge-anchored: generate candidates from boundary\n"
-            "  - Early stopping: stop when top-k stabilize"
+            "  - Edge-anchored: generate candidates from boundary"
         )
 
     def initAlgorithm(self, config=None):
@@ -200,11 +196,7 @@ class OrientedLirAlgorithm(QgsProcessingAlgorithm):
                 defaultValue=False
             )
         )
-        self.addParameter(
-            QgsProcessingParameterBoolean(
-                self.USE_MULTI_CENTER, "Use multi-center evaluation",
-                defaultValue=False
-            )
+
         )
         self.addParameter(
             QgsProcessingParameterBoolean(
@@ -245,9 +237,7 @@ class OrientedLirAlgorithm(QgsProcessingAlgorithm):
         use_sa = self.parameterAsBool(parameters, self.USE_SA, context)
         use_bootstrap = self.parameterAsBool(parameters, self.USE_BOOTSTRAP, context)
         use_pca = self.parameterAsBool(parameters, self.USE_PCA, context)
-        use_multi_center = self.parameterAsBool(parameters, self.USE_MULTI_CENTER, context)
         use_edge_anchored = self.parameterAsBool(parameters, self.USE_EDGE_ANCHORED, context)
-        use_early_stop = self.parameterAsBool(parameters, self.USE_EARLY_STOP, context)
 
         crs = source.sourceCrs()
 
@@ -285,9 +275,7 @@ class OrientedLirAlgorithm(QgsProcessingAlgorithm):
                     use_simulated_annealing=use_sa,
                     use_bootstrap_seeds=use_bootstrap,
                     use_pca_axes=use_pca,
-                    use_multi_center=use_multi_center,
                     use_edge_anchored=use_edge_anchored,
-                    use_early_stopping=use_early_stop,
                 )
                 out_feat = QgsFeature(RESULT_FIELDS)
                 out_feat.setGeometry(QgsGeometry.fromWkt(rect.polygon_wkt))
