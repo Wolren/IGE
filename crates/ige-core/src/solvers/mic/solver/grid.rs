@@ -1,14 +1,18 @@
 use std::collections::BinaryHeap;
 
 use geo_types::Point;
-use rayon::prelude::*;
-
 use super::super::index::{NearestBoundaryIndex, PipIndex};
 use super::super::input::HostPolygon;
 use super::super::{MicResult, MicUsedEngine};
 
 const SQRT2: f64 = std::f64::consts::SQRT_2;
-const MAX_RADIUS_FRACTION: f64 = 0.0001;
+
+#[cfg(feature = "tracy")]
+macro_rules! profile_zone {
+    ($name:expr) => {
+        let _span = tracy_client::span!($name);
+    };
+}
 
 #[derive(Debug, Clone, Copy)]
 struct GridCell {
@@ -47,6 +51,8 @@ pub fn solve_grid(
     nb: &NearestBoundaryIndex,
     tolerance: f64,
 ) -> Option<MicResult> {
+#[cfg(feature = "tracy")]
+    let _span = tracy_client::span!("solve_grid");
     let bounds = host.bounds()?;
     let (min_x, min_y, max_x, max_y) = bounds;
 
@@ -58,33 +64,58 @@ pub fn solve_grid(
         return None;
     }
 
-    let mut queue: BinaryHeap<GridCell> = BinaryHeap::new();
-
-    // GEOS-style: create initial grid of cells covering entire bounding box
     let grid_side = 25;
     let h_size = cell_size / (grid_side as f64);
-    
-    // Parallel initial grid creation
-    let cells: Vec<_> = (0..grid_side)
-        .into_par_iter()
-        .flat_map(|i| {
-            (0..grid_side).into_par_iter().filter_map(move |j| {
-                let cx = min_x + (i as f64 + 0.5) * h_size;
-                let cy = min_y + (j as f64 + 0.5) * h_size;
-                create_interior_cell(host, pip, nb, cx, cy, h_size)
-            }).collect::<Vec<_>>()
-        })
-        .collect();
-    
-    for cell in cells {
-        queue.push(cell);
+
+    // Pre-allocate priority queue with estimated capacity to reduce reallocations
+    let initial_cell_count = grid_side * grid_side;
+    let mut queue: BinaryHeap<GridCell> = BinaryHeap::with_capacity(initial_cell_count * 2);
+
+    #[cfg(feature = "tracy")]
+    let _span_init = tracy_client::span!("init_grid");
+
+    // Precompute base offsets to reduce arithmetic in inner loop
+    let base_x = min_x + 0.5 * h_size;
+    let base_y = min_y + 0.5 * h_size;
+
+    for i in 0..grid_side {
+        let cx_base = base_x + i as f64 * h_size;
+        for j in 0..grid_side {
+            let cx = cx_base;
+            let cy = base_y + j as f64 * h_size;
+
+            // Fast overall bbox reject: point outside polygon's AABB cannot be inside
+            if cx > max_x || cy > max_y {
+                continue;
+            }
+
+            // PIP check — skips most cells
+            if !pip.contains_strict_xy(cx, cy) {
+                continue;
+            }
+
+            // Nearest boundary distance
+            let Some((dist_sq, _)) = nb.nearest_distance_sq(cx, cy) else {
+                continue;
+            };
+            if !dist_sq.is_finite() || dist_sq <= 0.0 {
+                continue;
+            }
+
+            let distance = dist_sq.sqrt();
+            let max_dist = distance + h_size * SQRT2;
+
+            queue.push(GridCell { x: cx, y: cy, h_size, distance, max_dist });
+        }
     }
+
+    #[cfg(feature = "tracy")]
+    drop(_span_init);
 
     if queue.is_empty() {
         return None;
     }
 
-    // Track farthest cell (best candidate found so far)
     let mut farthest_x = 0.0;
     let mut farthest_y = 0.0;
     let mut farthest_dist = 0.0;
@@ -100,20 +131,29 @@ pub fn solve_grid(
             break;
         }
 
-        // GEOS termination: if no cell can have distance > farthest, we're done
-        // cell.max_dist is the MAX possible distance within this cell
         if found_initial && cell.max_dist <= farthest_dist {
             break;
         }
 
-        // Check if cell center is inside polygon
+        #[cfg(feature = "tracy")]
+        let _span_pip = tracy_client::span!("pip_check");
         if !pip.contains_strict_xy(cell.x, cell.y) {
+            #[cfg(feature = "tracy")]
+            drop(_span_pip);
             continue;
         }
+        #[cfg(feature = "tracy")]
+        drop(_span_pip);
 
+        #[cfg(feature = "tracy")]
+        let _span_nb = tracy_client::span!("nb_query");
         let Some((dist_sq, _)) = nb.nearest_distance_sq(cell.x, cell.y) else {
+            #[cfg(feature = "tracy")]
+            drop(_span_nb);
             continue;
         };
+        #[cfg(feature = "tracy")]
+        drop(_span_nb);
 
         if !dist_sq.is_finite() || dist_sq <= 0.0 {
             continue;
@@ -130,7 +170,6 @@ pub fn solve_grid(
             found_initial = true;
         }
 
-        // Refine cell if it can potentially improve beyond tolerance
         if cell.h_size > tolerance {
             let half_h = cell.h_size * 0.5;
             // Split into 4 sub-cells (GEOS-style)
@@ -142,11 +181,32 @@ pub fn solve_grid(
             ];
 
             for (nx, ny) in sub_cells {
-                if let Some(child_cell) = create_interior_cell(host, pip, nb, nx, ny, half_h) {
-                    // Only push if it could potentially improve current best
-                    if child_cell.max_dist > farthest_dist + tolerance {
-                        queue.push(child_cell);
-                    }
+                // Quick overall bbox reject — avoids PIP for clearly exterior points
+                if nx < min_x || nx > max_x || ny < min_y || ny > max_y {
+                    continue;
+                }
+                // PIP check
+                if !pip.contains_strict_xy(nx, ny) {
+                    continue;
+                }
+                // Nearest boundary distance
+                let Some((dist_sq, _)) = nb.nearest_distance_sq(nx, ny) else {
+                    continue;
+                };
+                if !dist_sq.is_finite() || dist_sq <= 0.0 {
+                    continue;
+                }
+                let distance = dist_sq.sqrt();
+                let max_dist = distance + half_h * SQRT2;
+                // Only push if it could potentially improve current best
+                if max_dist > farthest_dist + tolerance {
+                    queue.push(GridCell {
+                        x: nx,
+                        y: ny,
+                        h_size: half_h,
+                        distance,
+                        max_dist,
+                    });
                 }
             }
         }
@@ -168,39 +228,6 @@ pub fn solve_grid(
         component_index: None,
     })
 }
-
-fn create_interior_cell(
-    host: &HostPolygon,
-    pip: &PipIndex,
-    nb: &NearestBoundaryIndex,
-    x: f64,
-    y: f64,
-    h_size: f64,
-) -> Option<GridCell> {
-    if !pip.contains_strict_xy(x, y) {
-        return None;
-    }
-
-    let Some((dist_sq, _)) = nb.nearest_distance_sq(x, y) else {
-        return None;
-    };
-
-    if !dist_sq.is_finite() || dist_sq <= 0.0 {
-        return None;
-    }
-
-    let distance = dist_sq.sqrt();
-    let max_dist = distance + h_size * SQRT2;
-
-    Some(GridCell {
-        x,
-        y,
-        h_size,
-        distance,
-        max_dist,
-    })
-}
-
 fn compute_max_iterations(host: &HostPolygon, tolerance: f64) -> usize {
     let Some(bounds) = host.bounds() else { return 10000; };
     let (min_x, min_y, max_x, max_y) = bounds;

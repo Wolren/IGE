@@ -143,19 +143,29 @@ fn solve_on_host_polygon(
     host: &HostPolygon,
     opts: &MicOptions,
 ) -> Result<MicResult, MicError> {
-    // Phase 0: Try analytical fast path for simple shapes (triangle, convex quad)
+    // Phase 0: Try analytical fast path for simple shapes (triangle, rectangle, convex quad).
+    // We intentionally do NOT dispatch arbitrary N-gons to fast_convex_n here:
+    // real-world data has near-collinear reflex vertices and numerical noise that
+    // can fool convexity checks, producing kernel circles smaller than the true MIC.
     if opts.engine != MicEngine::FallbackOnly && host.ring_count() == 1 {
         let outer_len = host.outer_ring().len();
-        'fast: {
-            // fast_triangle needs outer.len() == 4 (3 vertices + closing)
-            // fast_convex_quad needs outer.len() == 5 (4 vertices + closing)
-            let result = if outer_len == 4 { solver::exact::fast_triangle(host) }
-            else if outer_len == 5 { solver::exact::fast_convex_quad(host) }
-            else { None };
-            if result.is_none() { break 'fast; }
-            let result = result.unwrap();
-
-            // Verify: compute exact nearest-boundary distance via linear scan
+        let result = if outer_len == 4 {
+            // Triangle — exact incenter formula
+            solver::exact::fast_triangle(host)
+        } else if outer_len == 5 {
+            // Rectangle (cheapest O(1)), then general convex quad (LP solver)
+            solver::exact::fast_rectangle(host)
+                .or_else(|| solver::exact::fast_convex_quad(host))
+        } else {
+            None
+        };
+        if let Some(result) = result {
+            // Triangle and rectangle are exact — no verification needed.
+            if outer_len <= 4 {
+                return Ok(result);
+            }
+            // Convex quad: verify because the convexity check can be fooled by
+            // nearly-collinear edges in real-world data.
             let seg_idx = input::SegmentIndex::from_host(host);
             let mut actual_sq = f64::INFINITY;
             for idx in 0..seg_idx.len() {
@@ -203,7 +213,7 @@ fn solve_on_host_polygon(
                 Err(e) => {
                     #[cfg(feature = "geos")]
                     {
-                        let seg_index = workspace.seg_index.clone();
+                        let seg_index = workspace.nb_index.segments().clone();
                         run_geos(host, Some(&seg_index), opts).map_err(|fallback_err| {
                             MicError::GeosFailed(format!("exact failed ({e}); fallback failed ({fallback_err})"))
                         })

@@ -46,6 +46,9 @@ wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 bytemuck = { workspace = true, optional = true }
 criterion = "0.8.2"
+dhat = { version = "0.3", optional = true }
+tracy-client = { version = "0.18", default-features = false, features = ["enable"], optional = true }
+ctor = { version = "0.2", optional = true }
 
 [[example]]
 name = "run_all"
@@ -66,4 +69,6 @@ cpu = []
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck", "dep:anyhow"]
 geos = ["dep:geos"]
 simd = []
-dhat = []
+dhat = ["dep:dhat"]
+tracy = ["dep:tracy-client"]
+timing = []

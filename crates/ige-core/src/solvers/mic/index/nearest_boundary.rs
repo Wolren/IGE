@@ -28,6 +28,7 @@ impl GridIndex {
             };
         }
 
+        // Compute overall bbox (sequential — cheap)
         let mut bbox_min_x = f64::INFINITY;
         let mut bbox_min_y = f64::INFINITY;
         let mut bbox_max_x = f64::NEG_INFINITY;
@@ -49,8 +50,8 @@ impl GridIndex {
         let cell_w = span_x / nx as f64;
         let cell_h = span_y / ny as f64;
 
-        let mut cells = vec![Vec::new(); nx * ny];
-
+        // Build grid cells sequentially
+        let mut cells: Vec<Vec<usize>> = vec![Vec::new(); nx * ny];
         for seg_idx in 0..segments.len() {
             let min_ci = ((segments.bbox_minx[seg_idx] - bbox_min_x) / cell_w).floor() as isize;
             let max_ci = ((segments.bbox_maxx[seg_idx] - bbox_min_x) / cell_w).ceil() as isize;
@@ -64,7 +65,8 @@ impl GridIndex {
 
             for cj in min_cj..=max_cj {
                 for ci in min_ci..=max_ci {
-                    cells[cj as usize * nx + ci as usize].push(seg_idx);
+                    let cell_idx = cj as usize * nx + ci as usize;
+                    cells[cell_idx].push(seg_idx);
                 }
             }
         }
@@ -420,6 +422,11 @@ impl NearestBoundaryIndex {
     pub fn new(segments: SegmentIndex) -> Self {
         let grid = GridIndex::from_segments(&segments);
         Self { segments, grid }
+    }
+
+    #[inline]
+    pub fn segments(&self) -> &SegmentIndex {
+        &self.segments
     }
 
     #[inline]

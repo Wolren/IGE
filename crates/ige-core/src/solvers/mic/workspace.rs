@@ -13,7 +13,6 @@ pub(crate) struct MicCandidate {
 #[derive(Debug, Clone)]
 pub struct MicWorkspace {
     pub host: HostPolygon,
-    pub seg_index: SegmentIndex,
     pub pip_index: PipIndex,
     pub nb_index: NearestBoundaryIndex,
     pub(crate) candidate_buf: Vec<MicCandidate>,
@@ -28,10 +27,9 @@ impl MicWorkspace {
             ));
         }
         let pip_index = PipIndex::new(&host);
-        let nb_index = NearestBoundaryIndex::new(seg_index.clone());
+        let nb_index = NearestBoundaryIndex::new(seg_index);
         Ok(Self {
             host,
-            seg_index,
             pip_index,
             nb_index,
             candidate_buf: Vec::new(),

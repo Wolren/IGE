@@ -139,6 +139,29 @@ fn bench_mic_exact(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "dhat")]
+fn bench_mic_grid_dhat(c: &mut Criterion) {
+    use ige_core::solvers::mic::solver::grid::solve_grid_profiled;
+    use ige_core::solvers::mic::workspace::MicWorkspace;
+
+    let mut group = c.benchmark_group("mic-grid-dhat");
+    group.sample_size(10);
+
+    for (name, poly) in fixtures() {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let workspace = MicWorkspace::new(ige_core::solvers::mic::input::HostPolygon::from_polygon(&poly).unwrap()).unwrap();
+                let bounds = workspace.host.bounds().unwrap();
+                let diag = (bounds.2 - bounds.0).hypot(bounds.3 - bounds.1).max(1.0);
+                let tolerance = (diag * 1e-7).max(1e-12);
+                solve_grid_profiled(&workspace.host, &workspace.pip_index, &workspace.nb_index, tolerance)
+            });
+        });
+    }
+
+    group.finish();
+}
+
 #[cfg(feature = "geos")]
 fn bench_mic_geos(c: &mut Criterion) {
     let mut group = c.benchmark_group("mic");
@@ -155,11 +178,17 @@ fn bench_mic_geos(c: &mut Criterion) {
 
 criterion_group!(benches, bench_mic_exact);
 
+#[cfg(feature = "dhat")]
+criterion_group!(dhat_benches, bench_mic_grid_dhat);
+
 #[cfg(feature = "geos")]
 criterion_group!(geos_benches, bench_mic_geos);
 
-#[cfg(feature = "geos")]
+#[cfg(all(feature = "geos", feature = "dhat"))]
+criterion_main!(benches, geos_benches, dhat_benches);
+#[cfg(all(feature = "geos", not(feature = "dhat")))]
 criterion_main!(benches, geos_benches);
-
-#[cfg(not(feature = "geos"))]
+#[cfg(all(not(feature = "geos"), feature = "dhat"))]
+criterion_main!(benches, dhat_benches);
+#[cfg(not(any(feature = "geos", feature = "dhat")))]
 criterion_main!(benches);
