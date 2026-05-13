@@ -120,13 +120,14 @@ fn solve_polygon(
             Ok(r) => (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
             Err(_) => (None, 0.0, 0.0, false),
         }
-    } else if config.use_parallel || config.use_sa || config.use_bootstrap_seeds || config.use_pca_axes || config.use_early_stopping || config.use_edge_anchored {
+    } else if config.use_parallel || config.use_sa || config.use_bootstrap_seeds || config.use_pca_axes || config.use_early_stopping || config.use_edge_anchored || config.use_gradient_expand {
         let mut opts = LirOrientedOptions::default();
         opts.use_parallel_field = config.use_parallel;
         opts.use_simulated_annealing = config.use_sa;
         opts.use_bootstrap_seeds = config.use_bootstrap_seeds;
         opts.use_pca_axes = config.use_pca_axes;
         opts.use_edge_anchored = config.use_edge_anchored;
+        opts.use_gradient_expand = config.use_gradient_expand;
         match solve_lir_oriented(poly, &opts) {
             Ok(r) => (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
             Err(_) => (None, 0.0, 0.0, false),
@@ -315,11 +316,13 @@ fn main() {
             },
         });
         println!("JSON: {}", serde_json::to_string_pretty(&json).unwrap());
+        println!("Wall time: {:.2}ms  (avg {:.2}ms/shape)", wall_total_ms, wall_total_ms / all_polygons.len() as f64);
     } else {
         let path = out_dir.join("index.html");
         let html = build_html_lir(&all_polygons, &results, &config, wall_total_ms);
         fs::write(&path, &html).unwrap();
         println!("Generated: {}  ({algo})", path.display());
+        println!("Wall time: {:.2}ms  (avg {:.2}ms/shape)", wall_total_ms, wall_total_ms / all_polygons.len() as f64);
     }
 }
 
@@ -400,6 +403,7 @@ fn run_mic_mode(polygons: &[(String, geo_types::Polygon<f64>)], config: &CliConf
             "wall_ms": wall_total_ms,
         });
         println!("{}", serde_json::to_string(&json).unwrap());
+        println!("Wall time: {:.2}ms  (avg {:.2}ms/shape)", wall_total_ms, wall_total_ms / polygons.len() as f64);
         return;
     }
 
@@ -452,4 +456,5 @@ fn run_mic_mode(polygons: &[(String, geo_types::Polygon<f64>)], config: &CliConf
     );
     fs::write(&path, &html).unwrap();
     println!("Generated: {}  (MIC exact vs GEOS{})", path.display(), simd_status());
+    println!("Wall time: {:.2}ms  (avg {:.2}ms/shape)", wall_total_ms, wall_total_ms / polygons.len() as f64);
 }

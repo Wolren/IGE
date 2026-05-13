@@ -19,5 +19,6 @@ geo.workspace = true
 
 [features]
 default = []
+extension-module = ["pyo3/extension-module"]
 gpu = ["ige-core/gpu"]
 geos = ["ige-core/geos"]

@@ -17,9 +17,8 @@
 use geo::{BoundingRect, Centroid, ConvexHull};
 use geo_types::{Coord, LineString, Point, Polygon};
 use rayon::prelude::*;
-
 use super::candidates::{edge_candidate_angles, upper_bound_area};
-use super::expand::expand_rect_to_boundary;
+use super::expand::{expand_rect_to_boundary, expand_rect_gradient};
 use super::certify::{certify_and_adjust, best_effort_shrink_to_cover};
 use super::{LirOrientedOptions, LirOrientedResult};
 use super::super::axis_aligned::histogram::{lrih, lrih_vp};
@@ -116,6 +115,42 @@ fn rotate_coords_only(poly: &Polygon<f64>, angle_deg: f64) -> RotatedCoords {
     RotatedCoords { exterior: ext, holes, bbox: (minx, miny, maxx, maxy) }
 }
 
+// --- Bit-packed mask ------------------------------------------------------
+
+struct BitMask {
+    data: Vec<u8>,
+    n_bits: usize,
+}
+
+impl BitMask {
+    #[inline]
+    fn new(n_bits: usize) -> Self {
+        let n_bytes = (n_bits + 7) / 8;
+        Self {
+            data: vec![0u8; n_bytes],
+            n_bits,
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, idx: usize, value: bool) {
+        let byte_idx = idx / 8;
+        let bit_idx = idx % 8;
+        if value {
+            self.data[byte_idx] |= 1 << bit_idx;
+        } else {
+            self.data[byte_idx] &= !(1 << bit_idx);
+        }
+    }
+
+    #[inline]
+    fn get(&self, idx: usize) -> bool {
+        let byte_idx = idx / 8;
+        let bit_idx = idx % 8;
+        (self.data[byte_idx] >> bit_idx) & 1 != 0
+    }
+}
+
 // --- Parallel mask builder ------------------------------------------------
 
 fn build_mask_parallel(
@@ -136,7 +171,6 @@ fn build_mask_parallel(
         dx_dy: f64,
     }
 
-    let mut mask = vec![false; n_cols * n_rows];
     let mut edges: Vec<ActiveEdge> = Vec::new();
     for coords in std::iter::once(exterior).chain(interiors.iter().map(|h| h.as_slice())) {
         for w in coords.windows(2) {
@@ -158,45 +192,101 @@ fn build_mask_parallel(
     }
     edges.sort_by(|a, b| a.y_min.partial_cmp(&b.y_min).unwrap_or(std::cmp::Ordering::Equal));
 
+    // Precompute column centers once
+    let col_centers: Vec<f64> = xs.windows(2).map(|w| (w[0] + w[1]) * 0.5).collect();
+
+    // Use bit-packed mask for better cache utilization
+    let total_bits = n_cols * n_rows;
+    let mut mask = BitMask::new(total_bits);
+
+    // Sequential row processing (required for active edge state)
+    // but parallel column filling within each row
     let mut active: Vec<ActiveEdge> = Vec::new();
     let mut next_e = 0usize;
-    for r in 0..n_rows {
-        let y = (ys[r] + ys[r + 1]) * 0.5;
 
-        active.retain(|e| y < e.y_max);
-        while next_e < edges.len() && edges[next_e].y_min <= y {
-            if y < edges[next_e].y_max {
-                let e = edges[next_e];
-                active.push(ActiveEdge {
-                    y_min: y,
-                    y_max: e.y_max,
-                    x: e.x + (y - e.y_min) * e.dx_dy,
-                    dx_dy: e.dx_dy,
-                });
+    if n_cols >= 64 {
+        // Wide grid: parallelize columns within each row
+        for r in 0..n_rows {
+            let y = (ys[r] + ys[r + 1]) * 0.5;
+
+            active.retain(|e| y < e.y_max);
+            while next_e < edges.len() && edges[next_e].y_min <= y {
+                if y < edges[next_e].y_max {
+                    let e = edges[next_e];
+                    active.push(ActiveEdge {
+                        y_min: y,
+                        y_max: e.y_max,
+                        x: e.x + (y - e.y_min) * e.dx_dy,
+                        dx_dy: e.dx_dy,
+                    });
+                }
+                next_e += 1;
             }
-            next_e += 1;
-        }
 
-        for e in &mut active {
-            e.x += (y - e.y_min) * e.dx_dy;
-            e.y_min = y;
-        }
-        active.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-
-        let mut inside = false;
-        let mut cross = 0usize;
-        let base = r * n_cols;
-        for c in 0..n_cols {
-            let cx = (xs[c] + xs[c + 1]) * 0.5;
-            while cross < active.len() && active[cross].x < cx {
-                inside = !inside;
-                cross += 1;
+            for e in &mut active {
+                e.x += (y - e.y_min) * e.dx_dy;
+                e.y_min = y;
             }
-            mask[base + c] = inside;
+            active.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+
+            let active_x: Vec<f64> = active.iter().map(|e| e.x).collect();
+
+            // Parallel column filling - compute results first, then set
+            let base = r * n_cols;
+            let results: Vec<bool> = col_centers
+                .par_iter()
+                .enumerate()
+                .map(|(c, &cx)| {
+                    let crossings = active_x.iter().take_while(|&&x| x < cx).count();
+                    crossings % 2 == 1
+                })
+                .collect();
+
+            for (c, v) in results.into_iter().enumerate() {
+                mask.set(base + c, v);
+            }
+        }
+    } else {
+        // Narrow grid: sequential is faster (less overhead)
+        for r in 0..n_rows {
+            let y = (ys[r] + ys[r + 1]) * 0.5;
+
+            active.retain(|e| y < e.y_max);
+            while next_e < edges.len() && edges[next_e].y_min <= y {
+                if y < edges[next_e].y_max {
+                    let e = edges[next_e];
+                    active.push(ActiveEdge {
+                        y_min: y,
+                        y_max: e.y_max,
+                        x: e.x + (y - e.y_min) * e.dx_dy,
+                        dx_dy: e.dx_dy,
+                    });
+                }
+                next_e += 1;
+            }
+
+            for e in &mut active {
+                e.x += (y - e.y_min) * e.dx_dy;
+                e.y_min = y;
+            }
+            active.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+
+            let mut inside = false;
+            let mut cross = 0usize;
+            let base = r * n_cols;
+            for c in 0..n_cols {
+                let cx = col_centers[c];
+                while cross < active.len() && active[cross].x < cx {
+                    inside = !inside;
+                    cross += 1;
+                }
+                mask.set(base + c, inside);
+            }
         }
     }
 
-    mask
+    // Convert back to Vec<bool> for compatibility with existing code
+    (0..total_bits).map(|i| mask.get(i)).collect()
 }
 
 // --- Angle generation -----------------------------------------------------
@@ -240,6 +330,14 @@ fn wrap_angle_90(mut angle: f64) -> f64 {
 #[inline]
 fn cross2(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     ax * by - ay * bx
+}
+
+fn take_rotated(rotations: &mut Vec<(f64, RotatedCoords)>, angle: f64) -> Option<RotatedCoords> {
+    if let Some(idx) = rotations.iter().position(|(a, _)| (*a - angle).abs() < 1e-9) {
+        Some(rotations.swap_remove(idx).1)
+    } else {
+        None
+    }
 }
 
 fn point_in_rotated_polygon(rc: &RotatedCoords, px: f64, py: f64) -> bool {
@@ -484,7 +582,7 @@ fn center_seed_from_unconstrained_rect(
 }
 
 /// Fast-path detector for near-rectangular shapes.
-/// DISABLED: Area calculation was incorrect, causing false triggers on 
+/// DISABLED: Area calculation was incorrect, causing false triggers on
 /// non-rectangular polygons (33-41% fill ratio shapes attempting 45° rotations).
 /// To re-enable, need accurate signed area computation and higher threshold (>0.90).
 #[allow(dead_code)]
@@ -515,7 +613,7 @@ fn run_simulated_annealing_candidates(
     let mut out = Vec::with_capacity(chain_count * 2);
 
     for (si, seed) in seeds.iter().take(chain_count).enumerate() {
-        let mut rng = TinyRng::new((seed.angle.to_bits() ^ ((si as u64 + 1) * 0x9E37_79B9_7F4A_7C15)) | 1);
+        let mut rng = TinyRng::new((seed.angle.to_bits() ^ (si as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
 
         // Initialize chain with the seed candidate
         let mut current_angle = seed.angle;
@@ -534,7 +632,7 @@ fn run_simulated_annealing_candidates(
             let proposal_angle = wrap_angle_90(current_angle + rng.normal() * sigma_a);
 
             // Evaluate proposal using coarse evaluate (actual area landscape)
-            let Some(proposal_cand) = coarse_evaluate_angle(poly, proposal_angle, coarse_steps, max_ratio, min_ratio) else {
+            let Some((proposal_cand, _rc)) = coarse_evaluate_angle(poly, proposal_angle, coarse_steps, max_ratio, min_ratio) else {
                 continue;
             };
 
@@ -569,7 +667,7 @@ fn coarse_evaluate_angles(
     coarse_steps: usize,
     max_ratio: f64,
     min_ratio: f64,
-) -> Vec<Candidate> {
+) -> Vec<(Candidate, RotatedCoords)> {
     angles
         .par_iter()
         .filter_map(|&angle| {
@@ -579,12 +677,13 @@ fn coarse_evaluate_angles(
                 return None;
             }
 
-            let xs: Vec<f64> = (0..coarse_steps)
-                .map(|i| minx + (maxx - minx) * i as f64 / (coarse_steps - 1) as f64)
-                .collect();
-            let ys: Vec<f64> = (0..coarse_steps)
-                .map(|i| miny + (maxy - miny) * i as f64 / (coarse_steps - 1) as f64)
-                .collect();
+            let mut xs = Vec::with_capacity(coarse_steps);
+            let mut ys = Vec::with_capacity(coarse_steps);
+            for i in 0..coarse_steps {
+                let t = i as f64 / (coarse_steps - 1) as f64;
+                xs.push(minx + (maxx - minx) * t);
+                ys.push(miny + (maxy - miny) * t);
+            }
 
             let mask = build_mask_parallel(&rc.exterior, &rc.holes, &xs, &ys);
             let n_cols = xs.len().saturating_sub(1);
@@ -615,7 +714,8 @@ fn coarse_evaluate_angles(
                 }
             }
 
-            best_local.map(|(x0, y0, x1, y1, area)| Candidate { angle, area, rect_rot: (x0, y0, x1, y1) })
+            let candidate = best_local.map(|(x0, y0, x1, y1, area)| Candidate { angle, area, rect_rot: (x0, y0, x1, y1) });
+            candidate.map(|c| (c, rc))
         })
         .collect()
 }
@@ -626,19 +726,20 @@ fn coarse_evaluate_angle(
     coarse_steps: usize,
     max_ratio: f64,
     min_ratio: f64,
-) -> Option<Candidate> {
+) -> Option<(Candidate, RotatedCoords)> {
     let rc = rotate_coords_only(poly, angle);
     let (minx, miny, maxx, maxy) = rc.bbox;
     if maxx <= minx || maxy <= miny || coarse_steps < 2 {
         return None;
     }
 
-    let xs: Vec<f64> = (0..coarse_steps)
-        .map(|i| minx + (maxx - minx) * i as f64 / (coarse_steps - 1) as f64)
-        .collect();
-    let ys: Vec<f64> = (0..coarse_steps)
-        .map(|i| miny + (maxy - miny) * i as f64 / (coarse_steps - 1) as f64)
-        .collect();
+    let mut xs = Vec::with_capacity(coarse_steps);
+    let mut ys = Vec::with_capacity(coarse_steps);
+    for i in 0..coarse_steps {
+        let t = i as f64 / (coarse_steps - 1) as f64;
+        xs.push(minx + (maxx - minx) * t);
+        ys.push(miny + (maxy - miny) * t);
+    }
 
     let mask = build_mask_parallel(&rc.exterior, &rc.holes, &xs, &ys);
     let n_cols = xs.len().saturating_sub(1);
@@ -669,7 +770,8 @@ fn coarse_evaluate_angle(
         }
     }
 
-    best_local.map(|(x0, y0, x1, y1, area)| Candidate { angle, area, rect_rot: (x0, y0, x1, y1) })
+    let candidate = best_local.map(|(x0, y0, x1, y1, area)| Candidate { angle, area, rect_rot: (x0, y0, x1, y1) });
+    candidate.map(|c| (c, rc))
 }
 
 // --- Fine solve -----------------------------------------------------------
@@ -683,16 +785,16 @@ fn fine_solve_candidate(
     field_max_coords: usize,
     cert_eps: f64,
     cert_max_shrink: f64,
+    pre_rotated: Option<RotatedCoords>,
+    use_gradient_expand: bool,
 ) -> Option<LirOrientedResult> {
     let angle = candidate.angle;
     let centroid: Point<f64> = poly.centroid()?.into();
 
-    // Rotate once — no full Polygon allocation needed for the coord pass.
-    let rc = rotate_coords_only(poly, angle);
-    let rot = Polygon::new(
-        LineString::from(rc.exterior.clone()),
-        rc.holes.iter().map(|h| LineString::from(h.clone())).collect(),
-    );
+    let rc = match pre_rotated {
+        Some(rc) => rc,
+        None => rotate_coords_only(poly, angle),
+    };
 
     let mut xs_raw: Vec<f64> = rc.exterior.iter().map(|c| c.x).collect();
     let mut ys_raw: Vec<f64> = rc.exterior.iter().map(|c| c.y).collect();
@@ -715,7 +817,15 @@ fn fine_solve_candidate(
 
     if xs_raw.len() > field_max_coords || ys_raw.len() > field_max_coords {
         let (sx0, sy0, sx1, sy1) = candidate.rect_rot;
-        let expanded = expand_rect_to_boundary(&rot, sx0, sy0, sx1, sy1, max_ratio, min_ratio);
+        let rot = Polygon::new(
+            LineString::from(rc.exterior),
+            rc.holes.into_iter().map(LineString::from).collect(),
+        );
+        let expanded = if use_gradient_expand {
+            expand_rect_gradient(&rot, sx0, sy0, sx1, sy1, max_ratio, min_ratio)
+        } else {
+            expand_rect_to_boundary(&rot, sx0, sy0, sx1, sy1, max_ratio, min_ratio)
+        };
         return build_result(poly, angle, expanded, max_ratio, always_return, &centroid, cert_eps, cert_max_shrink);
     }
 
@@ -754,7 +864,15 @@ fn fine_solve_candidate(
     }
 
     let (fx0, fy0, fx1, fy1, _) = best_local?;
-    let expanded = expand_rect_to_boundary(&rot, fx0, fy0, fx1, fy1, max_ratio, min_ratio);
+    let rot = Polygon::new(
+        LineString::from(rc.exterior),
+        rc.holes.into_iter().map(LineString::from).collect(),
+    );
+    let expanded = if use_gradient_expand {
+        expand_rect_gradient(&rot, fx0, fy0, fx1, fy1, max_ratio, min_ratio)
+    } else {
+        expand_rect_to_boundary(&rot, fx0, fy0, fx1, fy1, max_ratio, min_ratio)
+    };
     build_result(poly, angle, expanded, max_ratio, always_return, &centroid, cert_eps, cert_max_shrink)
 }
 
@@ -859,7 +977,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
         });
     }
 
-    let poly = super::prepare::prepare_polygon(poly.clone()).ok_or_else(|| {
+    super::prepare::prepare_polygon(poly).ok_or_else(|| {
         LirError::InvalidPolygon("Polygon has <3 vertices or zero area".to_string())
     })?;
 
@@ -884,26 +1002,45 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
     let mut top_areas: Vec<f64> = Vec::new();
     let mut evaluated_angles: Vec<f64> = Vec::new();
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut coarse_rotations: Vec<(f64, RotatedCoords)> = Vec::new();
 
-    for (angle, ub) in ub_scored {
-        if top_areas.len() >= top_needed {
-            let mut kth_area = f64::INFINITY;
-            for &a in &top_areas {
-                if a < kth_area {
-                    kth_area = a;
-                }
-            }
-            if ub <= kth_area {
-                break;
-            }
+    // Process angles in parallel chunks to balance parallelism with early termination
+    let chunk_size = 16;
+    let mut idx = 0;
+
+    while idx < ub_scored.len() {
+        // Determine current cutoff based on top_areas
+        let cutoff = if top_areas.len() >= top_needed {
+            top_areas.iter().cloned().fold(f64::INFINITY, f64::min)
+        } else {
+            f64::NEG_INFINITY
+        };
+
+        // Collect this chunk, filtering out angles that can't beat the cutoff
+        let chunk: Vec<(f64, f64)> = ub_scored[idx..]
+            .iter()
+            .take(chunk_size)
+            .filter(|&&(_, ub)| ub > cutoff)
+            .copied()
+            .collect();
+
+        if chunk.is_empty() {
+            break;
         }
 
-        evaluated_angles.push(angle);
+        // Parallel evaluate this chunk
+        let angles_chunk: Vec<f64> = chunk.iter().map(|(a, _)| *a).collect();
+        let results = coarse_evaluate_angles(&poly, &angles_chunk, coarse_steps, options.max_ratio, options.min_ratio);
 
-        let c = coarse_evaluate_angle(&poly, angle, coarse_steps, options.max_ratio, options.min_ratio);
-
-        if let Some(c) = c {
+        // Process results sequentially to update top-k
+        for (c, rc) in results {
+            let angle = c.angle;
             let area = c.area;
+
+            evaluated_angles.push(angle);
+            coarse_rotations.push((c.angle, rc));
+            candidates.push(c);
+
             if top_areas.len() < top_needed {
                 top_areas.push(area);
             } else {
@@ -919,8 +1056,9 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                     top_areas[min_i] = area;
                 }
             }
-            candidates.push(c);
         }
+
+        idx += chunk_size;
     }
 
     if candidates.is_empty() {
@@ -938,7 +1076,10 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
 
     if !refinement_angles.is_empty() {
         let refined = coarse_evaluate_angles(&poly, &refinement_angles, coarse_steps, options.max_ratio, options.min_ratio);
-        candidates.extend(refined);
+        for (c, rc) in refined {
+            coarse_rotations.push((c.angle, rc));
+            candidates.push(c);
+        }
     }
 
     candidates.sort_by(|a, b| b.area.partial_cmp(&a.area).unwrap_or(std::cmp::Ordering::Equal));
@@ -974,8 +1115,9 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
         .min(options.top_k.max(5) + if options.use_simulated_annealing { 4 } else { 0 });
 
     let fine_results: Vec<Option<LirOrientedResult>> = candidates[..top_k]
-        .par_iter()
+        .iter()
         .map(|cand| {
+            let pre_rotated = take_rotated(&mut coarse_rotations, cand.angle);
             fine_solve_candidate(
                 &poly,
                 cand,
@@ -985,6 +1127,8 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                 options.field_max_coords,
                 options.cert_eps,
                 options.cert_max_shrink,
+                pre_rotated,
+                options.use_gradient_expand,
             )
         })
         .collect();
@@ -1006,9 +1150,15 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
             .collect();
         if !polish_angles.is_empty() {
             let polished = coarse_evaluate_angles(&poly, &polish_angles, coarse_steps.max(16), options.max_ratio, options.min_ratio);
-            let polished_results: Vec<Option<LirOrientedResult>> = polished
+            let mut polished_candidates = Vec::new();
+            for (c, rc) in polished {
+                coarse_rotations.push((c.angle, rc));
+                polished_candidates.push(c);
+            }
+            let polished_results: Vec<Option<LirOrientedResult>> = polished_candidates
                 .iter()
                 .map(|cand| {
+                    let pre_rotated = take_rotated(&mut coarse_rotations, cand.angle);
                     fine_solve_candidate(
                         &poly,
                         cand,
@@ -1018,6 +1168,8 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                         options.field_max_coords,
                         options.cert_eps,
                         options.cert_max_shrink,
+                        pre_rotated,
+                        options.use_gradient_expand,
                     )
                 })
                 .collect();
@@ -1068,6 +1220,8 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                 options.field_max_coords,
                 options.cert_eps,
                 options.cert_max_shrink,
+                None,
+                options.use_gradient_expand,
             ) {
                 if res.area > best.area {
                     best = res;
@@ -1098,6 +1252,8 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                         options.field_max_coords,
                         options.cert_eps,
                         options.cert_max_shrink,
+                        None,
+                        options.use_gradient_expand,
                     ) {
                         if res.area > best.area {
                             best = res;
@@ -1124,6 +1280,8 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                 options.field_max_coords,
                 options.cert_eps,
                 options.cert_max_shrink,
+                None,
+                options.use_gradient_expand,
             ) {
                 if res.area > best.area {
                     best = res;
@@ -1171,6 +1329,8 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                         options.field_max_coords,
                         options.cert_eps,
                         options.cert_max_shrink,
+                        None,
+                        options.use_gradient_expand,
                     ) {
                         if local_best.is_none() || res.area > local_best.as_ref().unwrap().area {
                             local_best = Some(res);

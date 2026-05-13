@@ -8,7 +8,7 @@ use geo_types::Polygon;
 const SIMPLIFY_THRESHOLD: usize = 300;
 const SIMPLIFY_TOL_FRAC: f64 = 0.001;
 
-pub fn prepare_polygon(poly: Polygon<f64>) -> Option<Polygon<f64>> {
+pub fn prepare_polygon(poly: &Polygon<f64>) -> Option<()> {
     let n_unique = poly.exterior().0.windows(2).filter(|w| w[0] != w[1]).count()
         + if poly.exterior().0.first() != poly.exterior().0.last() { 1 } else { 0 };
     if n_unique < 3 {
@@ -17,7 +17,7 @@ pub fn prepare_polygon(poly: Polygon<f64>) -> Option<Polygon<f64>> {
     if poly.unsigned_area() <= 0.0 {
         return None;
     }
-    Some(poly)
+    Some(())
 }
 
 pub fn simplify_for_solve(poly: &Polygon<f64>) -> (Polygon<f64>, bool) {
@@ -64,7 +64,7 @@ mod tests {
             ]),
             vec![],
         );
-        assert!(prepare_polygon(poly).is_some());
+        assert!(prepare_polygon(&poly).is_some());
     }
 
     #[test]
@@ -78,6 +78,6 @@ mod tests {
             ]),
             vec![],
         );
-        assert!(prepare_polygon(poly).is_some());
+        assert!(prepare_polygon(&poly).is_some());
     }
 }

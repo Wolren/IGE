@@ -34,8 +34,6 @@ pub enum EdgeOrigin {
 
 struct RotFrame {
     poly: Polygon<f64>,
-    xs: Vec<f64>,
-    ys: Vec<f64>,
     x_events: Vec<f64>,
     y_events: Vec<f64>,
     bbox: (f64, f64, f64, f64),
@@ -95,16 +93,22 @@ fn build_rot_frame(poly: &Polygon<f64>, angle_deg: f64) -> RotFrame {
     xs_raw.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
     ys_raw.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
 
-    let mut x_events = xs_raw.clone();
-    let mut y_events = ys_raw.clone();
+    let mut x_events = xs_raw;
+    let mut y_events = ys_raw;
 
-    for i in 0..xs_raw.len().saturating_sub(1) {
-        let mid = (xs_raw[i] + xs_raw[i + 1]) * 0.5;
-        x_events.push(mid);
+    let xn = x_events.len();
+    if xn > 1 {
+        x_events.reserve(xn - 1);
+        for i in 0..xn - 1 {
+            x_events.push((x_events[i] + x_events[i + 1]) * 0.5);
+        }
     }
-    for i in 0..ys_raw.len().saturating_sub(1) {
-        let mid = (ys_raw[i] + ys_raw[i + 1]) * 0.5;
-        y_events.push(mid);
+    let yn = y_events.len();
+    if yn > 1 {
+        y_events.reserve(yn - 1);
+        for i in 0..yn - 1 {
+            y_events.push((y_events[i] + y_events[i + 1]) * 0.5);
+        }
     }
 
     x_events.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -115,8 +119,6 @@ fn build_rot_frame(poly: &Polygon<f64>, angle_deg: f64) -> RotFrame {
 
     RotFrame {
         poly: rot_poly,
-        xs: xs_raw,
-        ys: ys_raw,
         x_events,
         y_events,
         bbox: (bbox.min().x, bbox.min().y, bbox.max().x, bbox.max().y),

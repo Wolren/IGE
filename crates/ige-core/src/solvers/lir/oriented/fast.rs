@@ -13,16 +13,16 @@ use crate::shared::rotate_polygon;
 
 /// Try the convex fast path. Returns `(certified_polygon, area, angle_deg, ratio)` or `None`.
 pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64, min_ratio: f64) -> Option<(Polygon<f64>, f64, f64, f64)> {
-    let coords: Vec<Coord<f64>> = poly.exterior().0.iter().cloned().collect();
-    let nv = if coords.len() > 1 { coords.len() - 1 } else { 0 };
+    let ext = &poly.exterior().0;
+    let nv = if ext.len() > 1 { ext.len() - 1 } else { 0 };
     let has_holes = !poly.interiors().is_empty();
 
     // Rectangle (identity) -- 4 vertices, no holes
     if nv == 4 && !has_holes {
         for i in 0..4 {
-            let p0 = coords[i];
-            let p1 = coords[(i + 1) % 4];
-            let p2 = coords[(i + 2) % 4];
+            let p0 = ext[i];
+            let p1 = ext[(i + 1) % 4];
+            let p2 = ext[(i + 2) % 4];
             let v1 = (p1.x - p0.x, p1.y - p0.y);
             let v2 = (p2.x - p1.x, p2.y - p1.y);
             let n1 = (v1.0 * v1.0 + v1.1 * v1.1).sqrt();
@@ -34,12 +34,11 @@ pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64, min_ratio: f64) -> O
                 }
             }
             if i == 3 {
-                let cp = &coords;
-                let wp = ((cp[1].x - cp[0].x).powi(2) + (cp[1].y - cp[0].y).powi(2)).sqrt();
-                let hp = ((cp[2].x - cp[1].x).powi(2) + (cp[2].y - cp[1].y).powi(2)).sqrt();
+                let wp = ((ext[1].x - ext[0].x).powi(2) + (ext[1].y - ext[0].y).powi(2)).sqrt();
+                let hp = ((ext[2].x - ext[1].x).powi(2) + (ext[2].y - ext[1].y).powi(2)).sqrt();
 
-                let e0 = (cp[1].x - cp[0].x, cp[1].y - cp[0].y);
-                let e1 = (cp[2].x - cp[1].x, cp[2].y - cp[1].y);
+                let e0 = (ext[1].x - ext[0].x, ext[1].y - ext[0].y);
+                let e1 = (ext[2].x - ext[1].x, ext[2].y - ext[1].y);
                 let ang = if wp >= hp {
                     e0.1.atan2(e0.0).to_degrees() % 90.0
                 } else {
@@ -47,7 +46,7 @@ pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64, min_ratio: f64) -> O
                 };
 
                 let rect_poly = Polygon::new(
-                    geo_types::LineString::from(vec![cp[0], cp[1], cp[2], cp[3], cp[0]]),
+                    geo_types::LineString::from(vec![ext[0], ext[1], ext[2], ext[3], ext[0]]),
                     vec![],
                 );
                 if let Some((cert_poly, cert_area)) = super::certify_and_adjust(
@@ -82,10 +81,10 @@ pub fn maybe_fast_path(poly: &Polygon<f64>, max_ratio: f64, min_ratio: f64) -> O
 
     // Edge-aligned angles from hull
     let mut raw_angles: Vec<f64> = Vec::new();
-    let hull_coords: Vec<_> = hull.exterior().0.iter().cloned().collect();
-    for i in 0..hull_coords.len().saturating_sub(1) {
-        let dx = hull_coords[i + 1].x - hull_coords[i].x;
-        let dy = hull_coords[i + 1].y - hull_coords[i].y;
+    let hull_ext = &hull.exterior().0;
+    for i in 0..hull_ext.len().saturating_sub(1) {
+        let dx = hull_ext[i + 1].x - hull_ext[i].x;
+        let dy = hull_ext[i + 1].y - hull_ext[i].y;
         if dx.abs() > 1e-12 || dy.abs() > 1e-12 {
             let a = dy.atan2(dx).to_degrees() % 90.0;
             if !raw_angles.iter().any(|&ra| (a - ra).abs() < 1.0) {

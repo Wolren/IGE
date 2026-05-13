@@ -196,8 +196,6 @@ class OrientedLirAlgorithm(QgsProcessingAlgorithm):
                 defaultValue=False
             )
         )
-
-        )
         self.addParameter(
             QgsProcessingParameterBoolean(
                 self.USE_EDGE_ANCHORED, "Use edge-anchored candidates",

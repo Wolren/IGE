@@ -7,11 +7,16 @@
 use geo::{BoundingRect, Contains};
 use geo_types::{Coord, LineString, Point, Polygon};
 
-use super::super::axis_aligned::sdf::polygon_sdf;
+use super::super::axis_aligned::sdf::{polygon_sdf, sdf_gradient};
 
 const BINARY_STEPS: usize = crate::tuning::EXPAND_BINARY_STEPS;
 const EXPAND_ITERS: usize = crate::tuning::EXPAND_ITERS;
 const SDF_PROBES: usize = 5;
+const GRADIENT_STEPS: usize = crate::tuning::GRADIENT_EXPAND_STEPS;
+const GRADIENT_STEP_SIZE: f64 = crate::tuning::GRADIENT_EXPAND_STEP_SIZE;
+const GRADIENT_GRADIENT_STEP: f64 = crate::tuning::GRADIENT_EXPAND_GRADIENT_STEP;
+const GRADIENT_MAX_DIST: f64 = crate::tuning::GRADIENT_EXPAND_MAX_DIST;
+const GRADIENT_MARGIN: f64 = crate::tuning::GRADIENT_EXPAND_MARGIN;
 
 /// Sample the SDF at `probes` points along a vertical line (fixed x, varying y)
 /// using recursive SDF evaluation: the Lipschitz property (|SDF(a)-SDF(b)| ≤ |a-b|)
@@ -481,4 +486,99 @@ mod tests {
         let idx = CoversIndex::from_polygon(&poly);
         assert!(rect_covers(&idx, &poly, 2.0, 2.0, 8.0, 8.0));
     }
+}
+
+/// SDF-based gradient descent: walk from rectangle center toward boundary
+/// and re-expand to find potentially better solutions.
+pub fn expand_rect_gradient(
+    rot_poly: &Polygon<f64>,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    max_ratio: f64,
+    min_ratio: f64,
+) -> (f64, f64, f64, f64) {
+    let bb = match rot_poly.bounding_rect() {
+        Some(b) => b,
+        None => return (x0, y0, x1, y1),
+    };
+    let minx = bb.min().x;
+    let miny = bb.min().y;
+    let maxx = bb.max().x;
+    let maxy = bb.max().y;
+
+    // First do normal expansion
+    let expanded = expand_rect_to_boundary(rot_poly, x0, y0, x1, y1, max_ratio, min_ratio);
+
+    let (ex0, ey0, ex1, ey1) = expanded;
+    let cx = (ex0 + ex1) * 0.5;
+    let cy = (ey0 + ey1) * 0.5;
+
+    // Try walking toward boundary and expanding from there
+    let mut best_rect = expanded;
+    let mut best_area = (ex1 - ex0) * (ey1 - ey0);
+
+    // Walk in each cardinal-ish direction and re-expand
+    for i in 0..GRADIENT_STEPS {
+        let angle = (i as f64) * std::f64::consts::PI / (GRADIENT_STEPS as f64 * 2.0);
+        let dx = angle.cos();
+        let dy = angle.sin();
+
+        // Walk from center toward this direction
+        let walk_dist = GRADIENT_STEP_SIZE * (i as f64 + 1.0) * 0.5;
+        let nx = cx + dx * walk_dist;
+        let ny = cy + dy * walk_dist;
+
+        // Skip if outside polygon
+        if polygon_sdf(rot_poly, nx, ny) > 0.0 {
+            continue;
+        }
+
+        // Compute gradient at this point
+        let (gx, gy) = sdf_gradient(rot_poly, nx, ny);
+        let grad_len = (gx * gx + gy * gy).sqrt();
+        if grad_len < 1e-10 {
+            continue;
+        }
+
+        // Normalize gradient
+        let gnx = gx / grad_len;
+        let gny = gy / grad_len;
+
+        // Walk along gradient toward boundary
+        let mut px = nx;
+        let mut py = ny;
+        let mut dist = 0.0;
+        while polygon_sdf(rot_poly, px, py) < 0.0 && dist < GRADIENT_MAX_DIST {
+            px += gnx * GRADIENT_GRADIENT_STEP;
+            py += gny * GRADIENT_GRADIENT_STEP;
+            dist += GRADIENT_GRADIENT_STEP;
+        }
+
+        // Expand from this new point as center
+        let margin_x = (ex1 - ex0) * GRADIENT_MARGIN;
+        let margin_y = (ey1 - ey0) * GRADIENT_MARGIN;
+
+        let start_x0 = (px - margin_x).max(minx);
+        let start_y0 = (py - margin_y).max(miny);
+        let start_x1 = (px + margin_x).min(maxx);
+        let start_y1 = (py + margin_y).min(maxy);
+
+        if start_x1 <= start_x0 || start_y1 <= start_y0 {
+            continue;
+        }
+
+        let reexpanded = expand_rect_to_boundary(rot_poly, start_x0, start_y0, start_x1, start_y1, max_ratio, min_ratio);
+
+        let (rx0, ry0, rx1, ry1) = reexpanded;
+        let area = (rx1 - rx0) * (ry1 - ry0);
+
+        if area > best_area {
+            best_area = area;
+            best_rect = reexpanded;
+        }
+    }
+
+    best_rect
 }

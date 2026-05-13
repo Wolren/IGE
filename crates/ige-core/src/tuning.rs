@@ -9,7 +9,7 @@
 // -- LIR Oriented standard pipeline (lir_oriented/mod.rs) --
 pub const GRID_COARSE: usize = 32;
 pub const GRID_FINE: usize = 64;
-pub const TOP_K: usize = 20;
+pub const TOP_K: usize = 1;
 pub const POLISH_HALFWIDTH: f64 = 3.0;
 pub const POLISH_XATOL: f64 = 0.02;
 pub const PRUNE_MARGIN: f64 = 0.92;
@@ -21,11 +21,18 @@ pub const CERT_MAX_SHRINK: f64 = 0.20;
 // -- LIR Oriented parallel field (lir_oriented/parallel.rs) --------
 pub const FIELD_MIN_ANGLES: usize = 45;
 pub const FIELD_ANGLE_STEP: usize = 5;
-pub const FIELD_MAX_COORDS: usize = 3000;
+pub const FIELD_MAX_COORDS: usize = 300;
 
 // -- SDF expansion (lir_oriented/expand.rs) -----------------------------
 pub const EXPAND_BINARY_STEPS: usize = 24;
 pub const EXPAND_ITERS: usize = 3;
+
+// -- SDF gradient expansion (lir_oriented/expand.rs) --------------------
+pub const GRADIENT_EXPAND_STEPS: usize = 15;
+pub const GRADIENT_EXPAND_STEP_SIZE: f64 = 0.5;
+pub const GRADIENT_EXPAND_GRADIENT_STEP: f64 = 1.0;
+pub const GRADIENT_EXPAND_MAX_DIST: f64 = 10.0;
+pub const GRADIENT_EXPAND_MARGIN: f64 = 0.3;
 
 // -- Containment verification (lir_axis_aligned/containment.rs) -------------
 pub const CONTAIN_BOUNDARY_EPS: f64 = 1e-9;

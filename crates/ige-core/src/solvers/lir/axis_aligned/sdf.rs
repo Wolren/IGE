@@ -58,6 +58,18 @@ pub fn polygon_sdf(poly: &Polygon<f64>, x: f64, y: f64) -> f64 {
     if winding != 0 { -d } else { d }  // negative = inside
 }
 
+/// Compute the gradient of the SDF using central differences.
+/// Returns (dx, dy) pointing in the direction of increasing distance (toward boundary).
+pub fn sdf_gradient(poly: &Polygon<f64>, x: f64, y: f64) -> (f64, f64) {
+    const H: f64 = 1e-6;
+    let sdf = |px: f64, py: f64| polygon_sdf(poly, px, py);
+
+    let dx = (sdf(x + H, y) - sdf(x - H, y)) / (2.0 * H);
+    let dy = (sdf(x, y + H) - sdf(x, y - H)) / (2.0 * H);
+
+    (dx, dy)
+}
+
 #[inline(always)]
 fn cross2d(ux: f64, uy: f64, vx: f64, vy: f64) -> f64 { ux * vy - uy * vx }
 

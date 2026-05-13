@@ -106,6 +106,7 @@ pub struct CliConfig {
     pub use_pca_axes: bool,
     pub use_early_stopping: bool,
     pub use_edge_anchored: bool,
+    pub use_gradient_expand: bool,
     pub use_ler: bool,
     pub use_approx_oriented: bool,
     pub use_json: bool,
@@ -125,6 +126,7 @@ impl CliConfig {
         let use_pca_axes = args.contains(&"--pca-axes".to_string());
         let use_early_stopping = args.contains(&"--early-stop".to_string());
         let use_edge_anchored = args.contains(&"--edge-anchored".to_string());
+        let use_gradient_expand = args.contains(&"--gradient-expand".to_string());
         let use_ler = args.contains(&"--ler".to_string());
         let use_approx_oriented = !args.contains(&"--baseline".to_string());
         let use_json = args.contains(&"--json".to_string());
@@ -148,6 +150,7 @@ impl CliConfig {
             use_pca_axes,
             use_early_stopping,
             use_edge_anchored,
+            use_gradient_expand,
             use_ler,
             use_approx_oriented,
             use_json,

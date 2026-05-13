@@ -17,7 +17,7 @@ use crate::shared::{Rectangle, Result};
 
 #[cfg(feature = "gpu")]
 use crate::gpu::GpuContext;
-pub use expand::expand_rect_to_boundary;
+pub use expand::{expand_rect_to_boundary, expand_rect_gradient};
 pub use parallel::solve_lir_oriented_parallel;
 pub use prepare::{prepare_polygon, simplify_for_solve};
 
@@ -51,6 +51,8 @@ pub struct LirOrientedOptions {
     pub use_pca_axes: bool,
     /// If true, generate edge-anchored candidates from boundary support relationships.
     pub use_edge_anchored: bool,
+    /// If true, use SDF gradient descent to explore better expansions.
+    pub use_gradient_expand: bool,
     /// Half-width (degrees) for the Brent golden-section polish.
     pub polish_halwidth_deg: f64,
     /// Convergence tolerance for Brent polish (degrees).
@@ -90,6 +92,7 @@ impl Default for LirOrientedOptions {
             use_bootstrap_seeds: false,
             use_pca_axes: false,
             use_edge_anchored: false,
+            use_gradient_expand: false,
             polish_halwidth_deg: crate::tuning::POLISH_HALFWIDTH,
             polish_xatol_deg: crate::tuning::POLISH_XATOL,
             prune_margin: crate::tuning::PRUNE_MARGIN,
@@ -204,6 +207,7 @@ pub fn worker_process_feature(
         use_bootstrap_seeds: false,
         use_pca_axes: false,
         use_edge_anchored: false,
+        use_gradient_expand: false,
         polish_halwidth_deg: crate::tuning::POLISH_HALFWIDTH,
         polish_xatol_deg: crate::tuning::POLISH_XATOL,
         prune_margin: crate::tuning::PRUNE_MARGIN,
