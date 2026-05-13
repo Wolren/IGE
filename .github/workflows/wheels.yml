@@ -75,7 +75,7 @@ jobs:
           path: dist/*
 
   build-sdist:
-    runs: ubuntu-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
