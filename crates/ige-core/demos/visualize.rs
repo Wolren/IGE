@@ -20,20 +20,35 @@ mod visualize_modules;
 use rayon::prelude::*;
 use std::fs;
 
-use crate::visualize_modules::cli::{AxisCliSolver, CliConfig, algo_name, simd_status};
-use crate::visualize_modules::io::load_polygons_from;
+use crate::visualize_modules::cli::{AxisCliSolver, PointCliSolver, CliConfig, algo_name, simd_status};
+use crate::visualize_modules::io::{load_polygons_from, load_linestrings_clustered, line_cluster_bbox, load_polygons_clustered, polygon_cluster_bbox};
 use crate::visualize_modules::render::{
     gen_mic_card, gen_svg_card,
 };
 use crate::visualize_modules::render::ComplexityMetrics;
 use crate::visualize_modules::shapes::{make_l_shape, make_u_shape, make_zigzag};
-use ige_core::solvers::ler::axis_aligned::solve_ler_axis_aligned_exact;
 use ige_core::solvers::ler::LerOptions;
+use ige_core::{solve_ler_axis_aligned_points_sweep, solve_ler_axis_aligned_points_dc};
+fn bbox_polygon(x0: f64, y0: f64, x1: f64, y1: f64) -> geo_types::Polygon<f64> {
+    geo_types::Polygon::new(
+        geo_types::LineString::from(vec![
+            geo_types::Coord { x: x0, y: y0 },
+            geo_types::Coord { x: x1, y: y0 },
+            geo_types::Coord { x: x1, y: y1 },
+            geo_types::Coord { x: x0, y: y1 },
+            geo_types::Coord { x: x0, y: y0 },
+        ]),
+        vec![],
+    )
+}
+
 use ige_core::solvers::lir::axis_aligned::{solve_axis_exact, solve_vertex_grid};
 use ige_core::solvers::lir::oriented::{solve_lir_oriented, LirOrientedOptions};
 use ige_core::solvers::mic::{maximum_inscribed_circle, MicEngine, MicOptions, MicUsedEngine, RobustMode};
 use ige_core::{solve_axis_rect_grid_with_backend, AxisAlignedOptions, MaskBackend};
 use geo::algorithm::area::Area;
+use geo_types::LineString;
+
 
 /// Build standard test shapes and merge them with real polygons if needed.
 fn build_polygons(real: Vec<(String, geo_types::Polygon<f64>)>, config: &CliConfig) -> Vec<(String, geo_types::Polygon<f64>)> {
@@ -70,53 +85,41 @@ fn build_polygons(real: Vec<(String, geo_types::Polygon<f64>)>, config: &CliConf
     data
 }
 
-/// Solve for a single polygon according to the active solver mode.
+/// Solve for a single polygon. `obstacles` contains pre-built ObstacleInput
+/// for cluster test cases. For normal polygons, obstacles is empty and the
+/// function builds them from the configured obstacle flags.
 fn solve_polygon(
     poly: &geo_types::Polygon<f64>,
     config: &CliConfig,
     mask_backend: MaskBackend,
+    obstacles: &[ige_core::ObstacleInput],
 ) -> (Option<geo_types::Polygon<f64>>, f64, f64, bool) {
     if config.use_ler {
-        let mut obstacles = vec![];
-        let obs_size = 0.15;
-        for c in poly.exterior().coords() {
-            let ox0 = c.x - obs_size;
-            let oy0 = c.y - obs_size;
-            let ox1 = c.x + obs_size;
-            let oy1 = c.y + obs_size;
-            let obs = geo_types::Polygon::new(
-                geo_types::LineString::from(vec![
-                    geo_types::Coord { x: ox0, y: oy0 },
-                    geo_types::Coord { x: ox1, y: oy0 },
-                    geo_types::Coord { x: ox1, y: oy1 },
-                    geo_types::Coord { x: ox0, y: oy1 },
-                    geo_types::Coord { x: ox0, y: oy0 },
-                ]),
-                vec![],
-            );
-            obstacles.push(obs);
-        }
-
-        for hole in poly.interiors() {
-            for c in hole.coords() {
-                let ox0 = c.x - obs_size;
-                let oy0 = c.y - obs_size;
-                let ox1 = c.x + obs_size;
-                let oy1 = c.y + obs_size;
-                let obs = geo_types::Polygon::new(
-                    geo_types::LineString::from(vec![
-                        geo_types::Coord { x: ox0, y: oy0 },
-                        geo_types::Coord { x: ox1, y: oy0 },
-                        geo_types::Coord { x: ox1, y: oy1 },
-                        geo_types::Coord { x: ox0, y: oy1 },
-                        geo_types::Coord { x: ox0, y: oy0 },
-                    ]),
-                    vec![],
-                );
-                obstacles.push(obs);
+        // Use planar or DC point solver if flag is set and only points are active
+        if config.obstacle_flags.points && !config.obstacle_flags.lines && !config.obstacle_flags.polygons
+            && (config.point_solver == PointCliSolver::Planar || config.point_solver == PointCliSolver::Dc)
+        {
+            let pts: Vec<geo_types::Coord<f64>> = obstacles.iter()
+                .filter_map(|o| match o {
+                    ige_core::ObstacleInput::Point(c) => Some(*c),
+                    _ => None,
+                })
+                .collect();
+            let result = match config.point_solver {
+                PointCliSolver::Planar => solve_ler_axis_aligned_points_sweep(poly, &pts, &LerOptions::default()),
+                PointCliSolver::Dc => solve_ler_axis_aligned_points_dc(poly, &pts, &LerOptions::default()),
+                _ => unreachable!(),
+            };
+            match result {
+                Ok(r) => return (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
+                Err(_) => return (None, 0.0, 0.0, false),
             }
         }
-        match solve_ler_axis_aligned_exact(poly, &obstacles, &LerOptions::default()) {
+
+        // Use pre-built obstacles from cluster_obstacle_map
+        let inputs = obstacles;
+
+        match ige_core::solve_ler_axis_aligned_mixed(poly, &inputs, &LerOptions::default()) {
             Ok(r) => (r.rect_polygon, r.area, r.angle_deg, r.best_effort),
             Err(_) => (None, 0.0, 0.0, false),
         }
@@ -260,12 +263,134 @@ fn main() {
         eprintln!("--sa is ignored in baseline axis-aligned mode");
     }
 
-    let real = load_polygons_from(config.file_path.as_deref());
-    eprintln!("Loaded {} polygons from geojson", real.len());
+    let flags = &config.obstacle_flags;
 
-    let mut all_polygons = build_polygons(real, &config);
+    // Load synthetic obstacle clusters (for visual overlay or cluster-mode solving)
+    let clustered_lines = load_linestrings_clustered(config.lines_file_path.as_deref());
+    let clustered_polys = load_polygons_clustered(config.polygons_file_path.as_deref());
+    let has_any_synth = !clustered_lines.is_empty() || !clustered_polys.is_empty();
+
+    // Build obstacle inputs for a whole cluster
+    fn build_cluster_obs(lines: &[LineString<f64>], polys: &[geo_types::Polygon<f64>]) -> Vec<ige_core::ObstacleInput> {
+        let mut out = Vec::new();
+        for ls in lines {
+            let pts: Vec<geo_types::Coord<f64>> = ls.coords().copied().collect();
+            for pair in pts.windows(2) {
+                let seg = geo_types::LineString::from(vec![pair[0], pair[1]]);
+                out.push(ige_core::ObstacleInput::Line(seg));
+            }
+        }
+        for p in polys {
+            out.push(ige_core::ObstacleInput::Polygon(p.clone()));
+        }
+        out
+    }
+
+    let mut all_polygons: Vec<(String, geo_types::Polygon<f64>)> = Vec::new();
+    let mut cluster_obstacle_map: Vec<Vec<ige_core::ObstacleInput>> = Vec::new();
+    let mut render_map: Vec<Vec<ige_core::ObstacleInput>> = Vec::new();
+    let mut is_bbox_map: Vec<bool> = Vec::new();
+
+    // Lines/polygons-only mode: use cluster bboxes as test cases
+    if (flags.lines || flags.polygons) && !flags.points && has_any_synth {
+        if flags.lines {
+            for (cid, lines) in &clustered_lines {
+                if let Some((x0, y0, x1, y1)) = line_cluster_bbox(lines) {
+                    all_polygons.push((format!("Line Cluster #{}", cid), bbox_polygon(x0, y0, x1, y1)));
+                    cluster_obstacle_map.push(build_cluster_obs(lines, &[]));
+                    render_map.push(vec![]);
+                    is_bbox_map.push(true);
+                }
+            }
+            eprintln!("Loaded {} line cluster test cases", all_polygons.len());
+        }
+        if flags.polygons {
+            for (cid, polys) in &clustered_polys {
+                if let Some((x0, y0, x1, y1)) = polygon_cluster_bbox(polys) {
+                    all_polygons.push((format!("Poly Cluster #{}", cid), bbox_polygon(x0, y0, x1, y1)));
+                    cluster_obstacle_map.push(build_cluster_obs(&[], polys));
+                    render_map.push(vec![]);
+                    is_bbox_map.push(true);
+                }
+            }
+            eprintln!("Loaded {} poly cluster test cases", all_polygons.len());
+        }
+    } else {
+        // Normal mode: load real-world polygons
+        let real = load_polygons_from(config.file_path.as_deref());
+        eprintln!("Loaded {} polygons from geojson", real.len());
+        all_polygons = build_polygons(real, &config);
+        cluster_obstacle_map = vec![vec![]; all_polygons.len()];
+        render_map = vec![vec![]; all_polygons.len()];
+        is_bbox_map = vec![false; all_polygons.len()];
+
+        let with_points_only = flags.points && !flags.lines && !flags.polygons;
+        let mixed_with_points = flags.points && (flags.lines || flags.polygons);
+
+        if with_points_only || mixed_with_points {
+            use geo::BoundingRect;
+            let poly_bboxes: Vec<Option<geo_types::Rect<f64>>> = all_polygons.iter()
+                .map(|(_, p)| p.bounding_rect()).collect();
+
+            for (idx, (_, poly)) in all_polygons.iter().enumerate() {
+                let pbox = &poly_bboxes[idx];
+
+                // Solver obstacles: vertex points
+                for c in poly.exterior().coords() {
+                    cluster_obstacle_map[idx].push(ige_core::ObstacleInput::Point(*c));
+                }
+                for hole in poly.interiors() {
+                    for c in hole.coords() {
+                        cluster_obstacle_map[idx].push(ige_core::ObstacleInput::Point(*c));
+                    }
+                }
+
+                // Mixed mode: lines/polygons go to solver too (via cluster_obstacle_map)
+                if mixed_with_points && flags.lines {
+                    for (_, lines) in &clustered_lines {
+                        for ls in lines {
+                            if let Some(ref pb) = pbox {
+                                let mut lx0 = f64::MAX; let mut lx1 = f64::MIN;
+                                let mut ly0 = f64::MAX; let mut ly1 = f64::MIN;
+                                for c in ls.coords() {
+                                    lx0 = lx0.min(c.x); lx1 = lx1.max(c.x);
+                                    ly0 = ly0.min(c.y); ly1 = ly1.max(c.y);
+                                }
+                                if lx1 > pb.min().x && lx0 < pb.max().x
+                                    && ly1 > pb.min().y && ly0 < pb.max().y {
+                                    let pts: Vec<geo_types::Coord<f64>> = ls.coords().copied().collect();
+                                    for pair in pts.windows(2) {
+                                        cluster_obstacle_map[idx].push(ige_core::ObstacleInput::Line(
+                                            geo_types::LineString::from(vec![pair[0], pair[1]])
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if mixed_with_points && flags.polygons {
+                    for (_, polys) in &clustered_polys {
+                        for p in polys {
+                            if let Some(ref pb) = pbox {
+                                if let Some(bb) = p.bounding_rect() {
+                                    if bb.max().x > pb.min().x && bb.min().x < pb.max().x
+                                        && bb.max().y > pb.min().y && bb.min().y < pb.max().y {
+                                        cluster_obstacle_map[idx].push(ige_core::ObstacleInput::Polygon(p.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(n) = config.limit {
         all_polygons.truncate(n);
+        cluster_obstacle_map.truncate(n);
+        is_bbox_map.truncate(n);
     }
 
     let algo = algo_name(&config);
@@ -287,11 +412,17 @@ fn main() {
         .enumerate()
         .map(|(idx, (id, poly))| {
             let start = std::time::Instant::now();
-            let (rp, ra, ang, be) = solve_polygon(poly, &config, config.mask_backend);
+            let obs_solver = &cluster_obstacle_map[idx];  // solver-only (points)
+            let obs_render = &render_map[idx];             // visual-only (lines/polygons)
+            // Combined for SVG
+            let mut all_obs: Vec<ige_core::ObstacleInput> = Vec::with_capacity(obs_solver.len() + obs_render.len());
+            all_obs.extend(obs_solver.iter().cloned());
+            all_obs.extend(obs_render.iter().cloned());
+            let (rp, ra, ang, be) = solve_polygon(poly, &config, config.mask_backend, obs_solver);
             let ms = start.elapsed().as_secs_f64() * 1000.0;
             let poly_area = poly.unsigned_area();
             let fill_pct = if poly_area > 0.0 { ra / poly_area * 100.0 } else { 0.0 };
-            let card = gen_svg_card(id, poly, rp.as_ref(), ra, ang, be, ms, config.use_ler);
+            let card = gen_svg_card(id, poly, rp.as_ref(), ra, ang, be, ms, config.use_ler, &all_obs, is_bbox_map[idx]);
             (idx, card, ra, ang, be, ms, fill_pct)
         })
         .collect();

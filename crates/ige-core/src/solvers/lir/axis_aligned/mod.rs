@@ -42,7 +42,8 @@ impl AxisAlignedSolver {
             AxisAlignedSolver::VertexGrid => solve_vertex_grid(poly, options),
             AxisAlignedSolver::Exact => solve_axis_exact(poly, options),
             AxisAlignedSolver::UniformGrid => {
-                let result = solve_axis_rect_grid(poly, options.max_grid, options.max_ratio, options.min_ratio)?;
+                let steps = if options.max_grid > 0 { options.max_grid } else { crate::tuning::AA_GRID_COARSE_STEPS };
+                let result = solve_axis_rect_grid(poly, steps, options.max_ratio, options.min_ratio)?;
                 Some(crate::shared::Rectangle {
                     x_min: result.0,
                     y_min: result.1,

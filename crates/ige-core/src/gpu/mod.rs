@@ -200,26 +200,30 @@ pub struct GpuContext {
 impl GpuContext {
     /// Initialize GPU context (blocking)
     pub fn new() -> Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         });
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
             force_fallback_adapter: false,
-        }))
-        .ok_or_else(|| anyhow::anyhow!("Failed to find suitable GPU adapter"))?;
+        })).map_err(|e| anyhow::anyhow!("Failed to find suitable GPU adapter: {}", e))?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("LIRiAP GPU Device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
             },
-            None,
-        ))?;
+        )).map_err(|e| anyhow::anyhow!("Failed to create device: {}", e))?;
 
         // Load and compile rect validation shader
         let rect_shader = include_str!("shaders/oriented_lir.wgsl");
@@ -279,30 +283,32 @@ impl GpuContext {
 
         let rect_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Rect Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let sdf_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("SDF Pipeline Layout"),
-            bind_group_layouts: &[&sdf_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&sdf_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let rect_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Oriented LIR Pipeline"),
             layout: Some(&rect_pipeline_layout),
             module: &rect_sm,
-            entry_point: "main",
+            entry_point: Some("main"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         let sdf_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("LIR Grid Batch Pipeline"),
             layout: Some(&sdf_pipeline_layout),
             module: &sdf_sm,
-            entry_point: "main",
+            entry_point: Some("main"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         // Load and compile batch grid scorer shader
@@ -361,16 +367,17 @@ impl GpuContext {
 
         let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Grid Batch Pipeline Layout"),
-            bind_group_layouts: &[&grid_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&grid_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let grid_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("LIR Grid Batch Pipeline"),
             layout: Some(&grid_pipeline_layout),
             module: &grid_sm,
-            entry_point: "main",
+            entry_point: Some("main"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         Ok(Self {
@@ -422,7 +429,7 @@ impl GpuContext {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).unwrap();
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
         rx.recv().unwrap()?;
         let data = buffer_slice.get_mapped_range();
         let result: Vec<T> = bytemuck::cast_slice(&data).to_vec();

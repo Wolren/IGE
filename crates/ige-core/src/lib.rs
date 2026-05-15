@@ -37,7 +37,8 @@ pub use solvers::mic::{
 };
 
 // LER solvers
-pub use solvers::ler::{LerOptions, LerResult, solve_ler_axis_aligned, solve_ler_oriented};
+pub use solvers::ler::{LerOptions, LerResult, solve_ler_axis_aligned, solve_ler_axis_aligned_with_lines, solve_ler_axis_aligned_with_lines_exact, solve_ler_axis_aligned_mixed, solve_ler_axis_aligned_points_sweep, solve_ler_axis_aligned_points_dc, solve_ler_oriented};
+pub use solvers::ler::axis_aligned::ObstacleInput;
 
 // Nesting solvers
 pub use solvers::nesting::{NestingOptions, NestingResult, solve_nesting, solve_nesting_convex};

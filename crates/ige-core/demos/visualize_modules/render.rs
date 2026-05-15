@@ -92,6 +92,8 @@ pub fn gen_svg_card(
     best_effort: bool,
     time_ms: f64,
     use_ler: bool,
+    obstacles: &[ige_core::ObstacleInput],
+    is_bbox: bool,
 ) -> String {
     let (mut min_x, mut min_y, mut max_x, mut max_y) = get_polygon_bounds(poly);
     
@@ -101,6 +103,27 @@ pub fn gen_svg_card(
             min_y = min_y.min(c.y);
             max_x = max_x.max(c.x);
             max_y = max_y.max(c.y);
+        }
+    }
+    
+    for obs in obstacles {
+        match obs {
+            ige_core::ObstacleInput::Point(c) => {
+                min_x = min_x.min(c.x); min_y = min_y.min(c.y);
+                max_x = max_x.max(c.x); max_y = max_y.max(c.y);
+            }
+            ige_core::ObstacleInput::Line(ls) => {
+                for c in ls.coords() {
+                    min_x = min_x.min(c.x); min_y = min_y.min(c.y);
+                    max_x = max_x.max(c.x); max_y = max_y.max(c.y);
+                }
+            }
+            ige_core::ObstacleInput::Polygon(p) => {
+                for c in p.exterior().coords() {
+                    min_x = min_x.min(c.x); min_y = min_y.min(c.y);
+                    max_x = max_x.max(c.x); max_y = max_y.max(c.y);
+                }
+            }
         }
     }
     
@@ -121,20 +144,35 @@ pub fn gen_svg_card(
 
     let to_svg = |x: f64, y: f64| (ox + (x - min_x) * scale, oy + (y - min_y) * scale);
 
-    // Draw obstacle points for LER mode
-    let obstacle_points: String = if use_ler {
-        let mut pts = vec![];
-        for c in poly.exterior().coords() {
-            let (sx, sy) = to_svg(c.x, c.y);
-            pts.push(format!(r#"<circle class="obstacle" cx="{:.1}" cy="{:.1}" r="2.5"/>"#, sx, sy));
-        }
-        for hole in poly.interiors() {
-            for c in hole.coords() {
-                let (sx, sy) = to_svg(c.x, c.y);
-                pts.push(format!(r#"<circle class="obstacle" cx="{:.1}" cy="{:.1}" r="2.5"/>"#, sx, sy));
+    // Draw obstacle elements for LER mode
+    let obstacle_svg: String = if use_ler {
+        let mut els = vec![];
+        for obs in obstacles {
+            match obs {
+                ige_core::ObstacleInput::Point(c) => {
+                    let (sx, sy) = to_svg(c.x, c.y);
+                    els.push(format!(r#"<circle class="obstacle-point" cx="{:.1}" cy="{:.1}" r="2.5"/>"#, sx, sy));
+                }
+                ige_core::ObstacleInput::Line(ls) => {
+                    let coords: Vec<(f64, f64)> = ls.coords().map(|c| to_svg(c.x, c.y)).collect();
+                    if coords.len() >= 2 {
+                        let pts: String = coords.iter()
+                            .map(|(x, y)| format!("{:.1},{:.1}", x, y))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        els.push(format!(r#"<polyline class="obstacle-line" points="{}"/>"#, pts));
+                    }
+                }
+                ige_core::ObstacleInput::Polygon(p) => {
+                    let pts: String = p.exterior().coords()
+                        .map(|c| { let (sx, sy) = to_svg(c.x, c.y); format!("{:.1},{:.1}", sx, sy) })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    els.push(format!(r#"<polygon class="obstacle-polygon" points="{}"/>"#, pts));
+                }
             }
         }
-        pts.join("")
+        els.join("")
     } else {
         String::new()
     };
@@ -170,10 +208,11 @@ pub fn gen_svg_card(
 
     let ratio = if poly_area > 0.0 { rect_area / poly_area * 100.0 } else { 0.0 };
 
+    let poly_cls = if is_bbox { "bbox-polygon" } else { "polygon" };
     format!(
         r#"<div class="card">
             <svg viewBox="0 0 {s:.0} {s:.0}">
-                <polygon class="polygon" points="{p}"/>
+                <polygon class="{pc}" points="{p}"/>
                 {h}
                 {r}
                 {ob}
@@ -189,8 +228,9 @@ pub fn gen_svg_card(
         s = svg_size,
         p = ext_pts,
         h = holes_svg,
+        pc = poly_cls,
         r = rect_svg,
-        ob = obstacle_points,
+        ob = obstacle_svg,
         id = id,
         pa = poly_area,
         ra = rect_area,
@@ -345,8 +385,11 @@ h1{color:#eee;margin-bottom:10px}
 .card{background:#16213e;border-radius:8px;padding:10px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
 svg{width:100%;height:200px;background:#0f0f23;border-radius:4px}
 .polygon{fill:#e94560;stroke:#ff6b6b;stroke-width:1}
+.bbox-polygon{fill:none;stroke:#ff6b6b;stroke-width:1;stroke-dasharray:4 3}
 .rect{fill:rgba(66,133,244,.4);stroke:#4285f4;stroke-width:2}
-.obstacle{fill:#ff4444;stroke:none}
+.obstacle-point{fill:#ff4444;stroke:none}
+.obstacle-line{fill:none;stroke:#ff8800;stroke-width:1.5;stroke-linecap:round}
+.obstacle-polygon{fill:#ffcc00;stroke:none}
 .best-effort{fill:rgba(255,193,7,.3);stroke:#ffc107}
 .hole{fill:none;stroke:#666;stroke-width:1;stroke-dasharray:3}
 .info{margin-top:8px;font-size:11px;color:#aaa;line-height:1.4}

@@ -7,7 +7,7 @@
 pub mod axis_aligned;
 pub mod oriented;
 
-use geo_types::Polygon;
+use geo_types::{Polygon, LineString};
 use crate::shared::{Rectangle, Result};
 
 /// Configuration for LER solvers.
@@ -85,6 +85,86 @@ pub fn solve_ler_axis_aligned(
     options: &LerOptions,
 ) -> Result<LerResult> {
     super::ler::axis_aligned::solve_ler_axis_aligned_exact(poly, obstacles, options)
+}
+
+/// Solve largest empty rectangle with axis-aligned constraints, including line obstacles.
+///
+/// # Arguments
+/// * `poly` - Input polygon defining the free space
+/// * `polygon_obstacles` - Optional collection of obstacle polygons to avoid
+/// * `line_obstacles` - Optional collection of line obstacles to avoid
+/// * `line_thickness` - Thickness to use for line obstacles (creates buffered obstacles)
+/// * `options` - Solver configuration
+///
+/// # Returns
+/// A `LerResult` with the largest empty rectangle.
+pub fn solve_ler_axis_aligned_with_lines(
+    poly: &Polygon<f64>,
+    polygon_obstacles: &[Polygon<f64>],
+    line_obstacles: &[LineString<f64>],
+    line_thickness: f64,
+    options: &LerOptions,
+) -> Result<LerResult> {
+    super::ler::axis_aligned::solve_ler_axis_aligned_with_lines(poly, polygon_obstacles, line_obstacles, line_thickness, options)
+}
+
+/// Solve using exact O(n log² n) divide-and-conquer for point obstacles.
+pub fn solve_ler_axis_aligned_points_dc(
+    poly: &Polygon<f64>,
+    points: &[geo_types::Coord<f64>],
+    options: &LerOptions,
+) -> Result<LerResult> {
+    super::ler::axis_aligned::point_dc::solve_ler_points_dc(poly, points, options)
+}
+
+/// Solve using the O(n log n) plane-sweep algorithm for point obstacles.
+/// Uses a balanced BST to track y-intervals, sweeping x left-to-right.
+/// `points` are the obstacle point coordinates.
+pub fn solve_ler_axis_aligned_points_sweep(
+    poly: &Polygon<f64>,
+    points: &[geo_types::Coord<f64>],
+    options: &LerOptions,
+) -> Result<LerResult> {
+    super::ler::axis_aligned::point_sweep::solve_ler_points_sweep(poly, points, options)
+}
+
+/// Solve with exact line obstacles (no thickness approximation).
+/// Each LineString segment blocks rectangles precisely along its intersection.
+pub fn solve_ler_axis_aligned_with_lines_exact(
+    poly: &Polygon<f64>,
+    polygon_obstacles: &[Polygon<f64>],
+    line_obstacles: &[LineString<f64>],
+    options: &LerOptions,
+) -> Result<LerResult> {
+    let mut inputs: Vec<axis_aligned::ObstacleInput> = Vec::new();
+    for p in polygon_obstacles {
+        inputs.push(axis_aligned::ObstacleInput::Polygon(p.clone()));
+    }
+    for ls in line_obstacles {
+        let pts: Vec<geo_types::Coord<f64>> = ls.coords().copied().collect();
+        for pair in pts.windows(2) {
+            let line = LineString::from(vec![pair[0], pair[1]]);
+            inputs.push(axis_aligned::ObstacleInput::Line(line));
+        }
+    }
+    solve_ler_axis_aligned_mixed(poly, &inputs, options)
+}
+
+/// Unified solver: accepts points, lines, and polygons as obstacles with automatic detection.
+///
+/// # Arguments
+/// * `poly` - Input polygon defining the free space
+/// * `obstacles` - Mixed obstacle types (`ObstacleInput::Point`, `ObstacleInput::Line`, `ObstacleInput::Polygon`)
+/// * `options` - Solver configuration
+///
+/// # Returns
+/// A `LerResult` with the largest empty rectangle.
+pub fn solve_ler_axis_aligned_mixed(
+    poly: &Polygon<f64>,
+    obstacles: &[axis_aligned::ObstacleInput],
+    options: &LerOptions,
+) -> Result<LerResult> {
+    super::ler::axis_aligned::solve_ler_axis_aligned_mixed(poly, obstacles, options)
 }
 
 /// Solve largest empty rectangle with free orientation.

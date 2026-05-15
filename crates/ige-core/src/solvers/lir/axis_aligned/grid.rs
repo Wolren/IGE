@@ -8,6 +8,7 @@ use geo::{BoundingRect, Contains};
 use geo_types::{Point, Polygon};
 
 use super::histogram::{lrih, lrih_vp};
+use super::containment::{rect_fully_contained, contract_rect_to_boundary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskBackend {
@@ -48,7 +49,7 @@ pub fn solve_axis_rect_grid(
 
 pub fn solve_axis_rect_grid_with_backend(
     poly: &Polygon<f64>,
-    grid_steps: usize,
+    mut grid_steps: usize,
     max_ratio: f64,
     min_ratio: f64,
     backend: MaskBackend,
@@ -61,6 +62,11 @@ pub fn solve_axis_rect_grid_with_backend(
 
     if maxx <= minx || maxy <= miny || grid_steps < 2 {
         return None;
+    }
+
+    let min_steps = crate::tuning::AA_GRID_COARSE_STEPS;
+    if grid_steps < min_steps {
+        grid_steps = min_steps;
     }
 
     // Generate grid-line positions from 1D Sobol sequences (low-discrepancy)
@@ -94,11 +100,57 @@ pub fn solve_axis_rect_grid_with_backend(
         let (x0, y0, x1, y1, area) = lrih(&heights, &xs, &ys, r, max_ratio, min_ratio);
 
         if area > 0.0 {
-            best = match best {
-                Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
-                None => Some((x0, y0, x1, y1, area)),
-                _ => best,
-            };
+            if rect_fully_contained(poly, x0, y0, x1, y1) {
+                best = match best {
+                    Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
+                    None => Some((x0, y0, x1, y1, area)),
+                    _ => best,
+                };
+            } else if let Some((cx0, cy0, cx1, cy1)) = contract_rect_to_boundary(poly, x0, y0, x1, y1) {
+                let contracted_area = (cx1 - cx0) * (cy1 - cy0);
+                best = match best {
+                    Some((_, _, _, _, a)) if contracted_area > a => Some((cx0, cy0, cx1, cy1, contracted_area)),
+                    None => Some((cx0, cy0, cx1, cy1, contracted_area)),
+                    _ => best,
+                };
+            }
+        }
+    }
+
+    // Refinement: try small perturbations around best rect
+    if let Some((x0, y0, x1, y1, _)) = best.take() {
+        let rw = x1 - x0;
+        let rh = y1 - y0;
+        if rw > 1e-10 && rh > 1e-10 {
+            let step_x = (rw * 0.15).max(0.01);
+            let step_y = (rh * 0.15).max(0.01);
+            let mut best_refined = (x0, y0, x1, y1);
+
+            for dx in &[-step_x, 0.0, step_x, -step_x * 0.5, step_x * 0.5] {
+                for dy in &[0.0, step_y, -step_y, step_y * 0.5, -step_y * 0.5] {
+                    let test_x0 = x0 + dx;
+                    let test_y0 = y0 + dy;
+                    let test_x1 = x1 + dx;
+                    let test_y1 = y1 + dy;
+
+                    if let Some((rx0, ry0, rx1, ry1)) = contract_rect_to_boundary(poly, test_x0, test_y0, test_x1, test_y1) {
+                        let test_area = (rx1 - rx0) * (ry1 - ry0);
+                        let cur_area = (best_refined.2 - best_refined.0) * (best_refined.3 - best_refined.1);
+                        if test_area > cur_area {
+                            best_refined = (rx0, ry0, rx1, ry1);
+                        }
+                    } else if rect_fully_contained(poly, test_x0, test_y0, test_x1, test_y1) {
+                        let test_area = (test_x1 - test_x0) * (test_y1 - test_y0);
+                        let cur_area = (best_refined.2 - best_refined.0) * (best_refined.3 - best_refined.1);
+                        if test_area > cur_area {
+                            best_refined = (test_x0, test_y0, test_x1, test_y1);
+                        }
+                    }
+                }
+            }
+
+            let (rx0, ry0, rx1, ry1) = best_refined;
+            best = Some((rx0, ry0, rx1, ry1, (rx1 - rx0) * (ry1 - ry0)));
         }
     }
 
@@ -157,7 +209,7 @@ pub fn solve_axis_rect_bcrs_with_backend(
     xs_raw.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
     ys_raw.dedup_by(|a, b| (*a - *b).abs() < 1e-14);
 
-    if xs_raw.len() > crate::tuning::AA_GRID_MAX_COORDS || ys_raw.len() > crate::tuning::AA_GRID_MAX_COORDS {
+    if xs_raw.len() > crate::tuning::AA_BCRS_MAX_COORDS || ys_raw.len() > crate::tuning::AA_BCRS_MAX_COORDS {
         return None;
     }
 
@@ -166,6 +218,10 @@ pub fn solve_axis_rect_bcrs_with_backend(
     if n_cols < 1 || n_rows < 1 {
         return None;
     }
+
+    let grid_cap = crate::tuning::AA_BCRS_GRID_CAP;
+    let n_cols = n_cols.min(grid_cap);
+    let n_rows = n_rows.min(grid_cap);
 
     // Cell-centre mask
     let mut mask = vec![false; n_cols * n_rows];
@@ -197,11 +253,57 @@ pub fn solve_axis_rect_bcrs_with_backend(
         let (x0, y0, x1, y1, area) = lrih_vp(&heights, &xs_raw, &ys_raw, r, max_ratio, min_ratio);
 
         if area > 0.0 {
-            best = match best {
-                Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
-                None => Some((x0, y0, x1, y1, area)),
-                _ => best,
-            };
+            if rect_fully_contained(rot_poly, x0, y0, x1, y1) {
+                best = match best {
+                    Some((_, _, _, _, a)) if area > a => Some((x0, y0, x1, y1, area)),
+                    None => Some((x0, y0, x1, y1, area)),
+                    _ => best,
+                };
+            } else if let Some((cx0, cy0, cx1, cy1)) = contract_rect_to_boundary(rot_poly, x0, y0, x1, y1) {
+                let contracted_area = (cx1 - cx0) * (cy1 - cy0);
+                best = match best {
+                    Some((_, _, _, _, a)) if contracted_area > a => Some((cx0, cy0, cx1, cy1, contracted_area)),
+                    None => Some((cx0, cy0, cx1, cy1, contracted_area)),
+                    _ => best,
+                };
+            }
+        }
+    }
+
+    // Refinement: try small perturbations around best rect
+    if let Some((x0, y0, x1, y1, _)) = best.take() {
+        let rw = x1 - x0;
+        let rh = y1 - y0;
+        if rw > 1e-10 && rh > 1e-10 {
+            let step_x = (rw * 0.15).max(0.01);
+            let step_y = (rh * 0.15).max(0.01);
+            let mut best_refined = (x0, y0, x1, y1);
+
+            for dx in &[-step_x, 0.0, step_x, -step_x * 0.5, step_x * 0.5] {
+                for dy in &[0.0, step_y, -step_y, step_y * 0.5, -step_y * 0.5] {
+                    let test_x0 = x0 + dx;
+                    let test_y0 = y0 + dy;
+                    let test_x1 = x1 + dx;
+                    let test_y1 = y1 + dy;
+
+                    if let Some((rx0, ry0, rx1, ry1)) = contract_rect_to_boundary(rot_poly, test_x0, test_y0, test_x1, test_y1) {
+                        let test_area = (rx1 - rx0) * (ry1 - ry0);
+                        let cur_area = (best_refined.2 - best_refined.0) * (best_refined.3 - best_refined.1);
+                        if test_area > cur_area {
+                            best_refined = (rx0, ry0, rx1, ry1);
+                        }
+                    } else if rect_fully_contained(rot_poly, test_x0, test_y0, test_x1, test_y1) {
+                        let test_area = (test_x1 - test_x0) * (test_y1 - test_y0);
+                        let cur_area = (best_refined.2 - best_refined.0) * (best_refined.3 - best_refined.1);
+                        if test_area > cur_area {
+                            best_refined = (test_x0, test_y0, test_x1, test_y1);
+                        }
+                    }
+                }
+            }
+
+            let (rx0, ry0, rx1, ry1) = best_refined;
+            best = Some((rx0, ry0, rx1, ry1, (rx1 - rx0) * (ry1 - ry0)));
         }
     }
 

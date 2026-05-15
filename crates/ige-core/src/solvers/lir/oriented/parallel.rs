@@ -115,42 +115,6 @@ fn rotate_coords_only(poly: &Polygon<f64>, angle_deg: f64) -> RotatedCoords {
     RotatedCoords { exterior: ext, holes, bbox: (minx, miny, maxx, maxy) }
 }
 
-// --- Bit-packed mask ------------------------------------------------------
-
-struct BitMask {
-    data: Vec<u8>,
-    n_bits: usize,
-}
-
-impl BitMask {
-    #[inline]
-    fn new(n_bits: usize) -> Self {
-        let n_bytes = (n_bits + 7) / 8;
-        Self {
-            data: vec![0u8; n_bytes],
-            n_bits,
-        }
-    }
-
-    #[inline]
-    fn set(&mut self, idx: usize, value: bool) {
-        let byte_idx = idx / 8;
-        let bit_idx = idx % 8;
-        if value {
-            self.data[byte_idx] |= 1 << bit_idx;
-        } else {
-            self.data[byte_idx] &= !(1 << bit_idx);
-        }
-    }
-
-    #[inline]
-    fn get(&self, idx: usize) -> bool {
-        let byte_idx = idx / 8;
-        let bit_idx = idx % 8;
-        (self.data[byte_idx] >> bit_idx) & 1 != 0
-    }
-}
-
 // --- Parallel mask builder ------------------------------------------------
 
 fn build_mask_parallel(
@@ -171,6 +135,7 @@ fn build_mask_parallel(
         dx_dy: f64,
     }
 
+    let mut mask = vec![false; n_cols * n_rows];
     let mut edges: Vec<ActiveEdge> = Vec::new();
     for coords in std::iter::once(exterior).chain(interiors.iter().map(|h| h.as_slice())) {
         for w in coords.windows(2) {
@@ -192,101 +157,45 @@ fn build_mask_parallel(
     }
     edges.sort_by(|a, b| a.y_min.partial_cmp(&b.y_min).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Precompute column centers once
-    let col_centers: Vec<f64> = xs.windows(2).map(|w| (w[0] + w[1]) * 0.5).collect();
-
-    // Use bit-packed mask for better cache utilization
-    let total_bits = n_cols * n_rows;
-    let mut mask = BitMask::new(total_bits);
-
-    // Sequential row processing (required for active edge state)
-    // but parallel column filling within each row
     let mut active: Vec<ActiveEdge> = Vec::new();
     let mut next_e = 0usize;
+    for r in 0..n_rows {
+        let y = (ys[r] + ys[r + 1]) * 0.5;
 
-    if n_cols >= 64 {
-        // Wide grid: parallelize columns within each row
-        for r in 0..n_rows {
-            let y = (ys[r] + ys[r + 1]) * 0.5;
-
-            active.retain(|e| y < e.y_max);
-            while next_e < edges.len() && edges[next_e].y_min <= y {
-                if y < edges[next_e].y_max {
-                    let e = edges[next_e];
-                    active.push(ActiveEdge {
-                        y_min: y,
-                        y_max: e.y_max,
-                        x: e.x + (y - e.y_min) * e.dx_dy,
-                        dx_dy: e.dx_dy,
-                    });
-                }
-                next_e += 1;
+        active.retain(|e| y < e.y_max);
+        while next_e < edges.len() && edges[next_e].y_min <= y {
+            if y < edges[next_e].y_max {
+                let e = edges[next_e];
+                active.push(ActiveEdge {
+                    y_min: y,
+                    y_max: e.y_max,
+                    x: e.x + (y - e.y_min) * e.dx_dy,
+                    dx_dy: e.dx_dy,
+                });
             }
-
-            for e in &mut active {
-                e.x += (y - e.y_min) * e.dx_dy;
-                e.y_min = y;
-            }
-            active.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-
-            let active_x: Vec<f64> = active.iter().map(|e| e.x).collect();
-
-            // Parallel column filling - compute results first, then set
-            let base = r * n_cols;
-            let results: Vec<bool> = col_centers
-                .par_iter()
-                .enumerate()
-                .map(|(c, &cx)| {
-                    let crossings = active_x.iter().take_while(|&&x| x < cx).count();
-                    crossings % 2 == 1
-                })
-                .collect();
-
-            for (c, v) in results.into_iter().enumerate() {
-                mask.set(base + c, v);
-            }
+            next_e += 1;
         }
-    } else {
-        // Narrow grid: sequential is faster (less overhead)
-        for r in 0..n_rows {
-            let y = (ys[r] + ys[r + 1]) * 0.5;
 
-            active.retain(|e| y < e.y_max);
-            while next_e < edges.len() && edges[next_e].y_min <= y {
-                if y < edges[next_e].y_max {
-                    let e = edges[next_e];
-                    active.push(ActiveEdge {
-                        y_min: y,
-                        y_max: e.y_max,
-                        x: e.x + (y - e.y_min) * e.dx_dy,
-                        dx_dy: e.dx_dy,
-                    });
-                }
-                next_e += 1;
-            }
+        for e in &mut active {
+            e.x += (y - e.y_min) * e.dx_dy;
+            e.y_min = y;
+        }
+        active.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
 
-            for e in &mut active {
-                e.x += (y - e.y_min) * e.dx_dy;
-                e.y_min = y;
+        let mut inside = false;
+        let mut cross = 0usize;
+        let base = r * n_cols;
+        for c in 0..n_cols {
+            let cx = (xs[c] + xs[c + 1]) * 0.5;
+            while cross < active.len() && active[cross].x < cx {
+                inside = !inside;
+                cross += 1;
             }
-            active.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-
-            let mut inside = false;
-            let mut cross = 0usize;
-            let base = r * n_cols;
-            for c in 0..n_cols {
-                let cx = col_centers[c];
-                while cross < active.len() && active[cross].x < cx {
-                    inside = !inside;
-                    cross += 1;
-                }
-                mask.set(base + c, inside);
-            }
+            mask[base + c] = inside;
         }
     }
 
-    // Convert back to Vec<bool> for compatibility with existing code
-    (0..total_bits).map(|i| mask.get(i)).collect()
+    mask
 }
 
 // --- Angle generation -----------------------------------------------------
@@ -669,7 +578,7 @@ fn coarse_evaluate_angles(
     min_ratio: f64,
 ) -> Vec<(Candidate, RotatedCoords)> {
     angles
-        .par_iter()
+        .iter()
         .filter_map(|&angle| {
             let rc = rotate_coords_only(poly, angle);
             let (minx, miny, maxx, maxy) = rc.bbox;
@@ -818,8 +727,8 @@ fn fine_solve_candidate(
     if xs_raw.len() > field_max_coords || ys_raw.len() > field_max_coords {
         let (sx0, sy0, sx1, sy1) = candidate.rect_rot;
         let rot = Polygon::new(
-            LineString::from(rc.exterior),
-            rc.holes.into_iter().map(LineString::from).collect(),
+            LineString::from(rc.exterior.clone()),
+            rc.holes.iter().map(|h| LineString::from(h.clone())).collect(),
         );
         let expanded = if use_gradient_expand {
             expand_rect_gradient(&rot, sx0, sy0, sx1, sy1, max_ratio, min_ratio)
@@ -865,8 +774,8 @@ fn fine_solve_candidate(
 
     let (fx0, fy0, fx1, fy1, _) = best_local?;
     let rot = Polygon::new(
-        LineString::from(rc.exterior),
-        rc.holes.into_iter().map(LineString::from).collect(),
+        LineString::from(rc.exterior.clone()),
+        rc.holes.iter().map(|h| LineString::from(h.clone())).collect(),
     );
     let expanded = if use_gradient_expand {
         expand_rect_gradient(&rot, fx0, fy0, fx1, fy1, max_ratio, min_ratio)
@@ -992,7 +901,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
     let coarse_steps = options.grid_coarse.max(8);
     let hull_centroid: Point<f64> = hull.centroid().map(|c| c.into()).unwrap_or(Point::new(0.0, 0.0));
 
-    let mut ub_scored: Vec<(f64, f64)> = all_angles.par_iter().filter_map(|&a| {
+    let mut ub_scored: Vec<(f64, f64)> = all_angles.iter().filter_map(|&a| {
         let ub = upper_bound_area(&hull, a, options.max_ratio, hull_centroid);
         if ub > 0.0 { Some((a, ub)) } else { None }
     }).collect();
@@ -1004,43 +913,25 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut coarse_rotations: Vec<(f64, RotatedCoords)> = Vec::new();
 
-    // Process angles in parallel chunks to balance parallelism with early termination
-    let chunk_size = 16;
-    let mut idx = 0;
-
-    while idx < ub_scored.len() {
-        // Determine current cutoff based on top_areas
-        let cutoff = if top_areas.len() >= top_needed {
-            top_areas.iter().cloned().fold(f64::INFINITY, f64::min)
-        } else {
-            f64::NEG_INFINITY
-        };
-
-        // Collect this chunk, filtering out angles that can't beat the cutoff
-        let chunk: Vec<(f64, f64)> = ub_scored[idx..]
-            .iter()
-            .take(chunk_size)
-            .filter(|&&(_, ub)| ub > cutoff)
-            .copied()
-            .collect();
-
-        if chunk.is_empty() {
-            break;
+    for (angle, ub) in ub_scored {
+        if top_areas.len() >= top_needed {
+            let mut kth_area = f64::INFINITY;
+            for &a in &top_areas {
+                if a < kth_area {
+                    kth_area = a;
+                }
+            }
+            if ub <= kth_area {
+                break;
+            }
         }
 
-        // Parallel evaluate this chunk
-        let angles_chunk: Vec<f64> = chunk.iter().map(|(a, _)| *a).collect();
-        let results = coarse_evaluate_angles(&poly, &angles_chunk, coarse_steps, options.max_ratio, options.min_ratio);
+        evaluated_angles.push(angle);
 
-        // Process results sequentially to update top-k
-        for (c, rc) in results {
-            let angle = c.angle;
+        let c = coarse_evaluate_angle(&poly, angle, coarse_steps, options.max_ratio, options.min_ratio);
+
+        if let Some((c, rc)) = c {
             let area = c.area;
-
-            evaluated_angles.push(angle);
-            coarse_rotations.push((c.angle, rc));
-            candidates.push(c);
-
             if top_areas.len() < top_needed {
                 top_areas.push(area);
             } else {
@@ -1056,9 +947,9 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
                     top_areas[min_i] = area;
                 }
             }
+            coarse_rotations.push((c.angle, rc));
+            candidates.push(c);
         }
-
-        idx += chunk_size;
     }
 
     if candidates.is_empty() {
@@ -1117,7 +1008,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
     let fine_results: Vec<Option<LirOrientedResult>> = candidates[..top_k]
         .iter()
         .map(|cand| {
-            let pre_rotated = take_rotated(&mut coarse_rotations, cand.angle);
+            let pre_rotated = None;
             fine_solve_candidate(
                 &poly,
                 cand,
@@ -1294,7 +1185,7 @@ pub fn solve_lir_oriented_parallel(poly: &Polygon<f64>, options: &LirOrientedOpt
         let mut test_angles: Vec<f64> = Vec::new();
 
         let edge_angles = edge_candidate_angles(&poly, 8.0, 6);
-        test_angles.extend(edge_angles.clone());
+        test_angles.extend(edge_angles);
 
         let current_angle = best.angle_deg;
         for delta in &[-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {

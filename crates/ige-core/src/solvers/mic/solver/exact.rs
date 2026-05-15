@@ -10,20 +10,22 @@ use super::super::index::NearestBoundaryIndex;
 use super::super::input::{HostPolygon, SegmentIndex};
 use super::super::workspace::{MicCandidate, MicWorkspace};
 use super::super::{MicError, MicOptions, MicResult, MicUsedEngine, RobustMode};
+use crate::tuning::{MIC_BINARY_ITERS, MIC_EXPANSION_ITERS, MIC_EPS, MIC_CANDIDATE_QUANTIZE,
+                   MIC_BASE_TRIPLE_CAP, MIC_BASE_SS_SEG_CAP, MIC_BASE_SS_VERT_CAP, MIC_BASE_SEGS_PER_RING,
+                   MIC_EXT_TRIPLE_CAP, MIC_EXT_SS_SEG_CAP, MIC_EXT_SS_VERT_CAP, MIC_EXT_SEGS_PER_RING};
 
-const CANDIDATE_QUANTIZE: f64 = 1e9;
+const CANDIDATE_QUANTIZE: f64 = MIC_CANDIDATE_QUANTIZE;
 
 // Baseline caps for simple (convex, few segments) polygons.
-const BASE_TRIPLE_CAP: usize = 64;
-const BASE_SS_SEG_CAP: usize = 32;
-const BASE_SS_VERT_CAP: usize = 12;
-const BASE_SEGS_PER_RING: usize = 3;
+const BASE_TRIPLE_CAP: usize = MIC_BASE_TRIPLE_CAP;
+const BASE_SS_SEG_CAP: usize = MIC_BASE_SS_SEG_CAP;
+const BASE_SS_VERT_CAP: usize = MIC_BASE_SS_VERT_CAP;
+const BASE_SEGS_PER_RING: usize = MIC_BASE_SEGS_PER_RING;
 
-// Extended caps for complex (concave, hole-containing, many segments) polygons.
-const EXT_TRIPLE_CAP: usize = 96;
-const EXT_SS_SEG_CAP: usize = 64;
-const EXT_SS_VERT_CAP: usize = 32;
-const EXT_SEGS_PER_RING: usize = 5;
+const EXT_TRIPLE_CAP: usize = MIC_EXT_TRIPLE_CAP;
+const EXT_SS_SEG_CAP: usize = MIC_EXT_SS_SEG_CAP;
+const EXT_SS_VERT_CAP: usize = MIC_EXT_SS_VERT_CAP;
+const EXT_SEGS_PER_RING: usize = MIC_EXT_SEGS_PER_RING;
 
 /// Check if a vertex at `vert_idx` in ring `ring_idx` is reflex (interior angle > 180°).
 fn reflex_vertex_in_ring(host: &HostPolygon, ring_idx: usize, vert_idx: usize) -> bool {
@@ -362,7 +364,7 @@ pub fn fast_convex_quad(host: &HostPolygon) -> Option<MicResult> {
     };
 
     // Binary search for maximum feasible radius
-    for _ in 0..40 {
+    for _ in 0..MIC_BINARY_ITERS {
         let r_mid = 0.5 * (r_lo + r_hi);
         // Feasibility: exists point (x,y) such that for all edges: a*x+b*y+c >= r_mid
         let mut feasible = false;
@@ -374,7 +376,7 @@ pub fn fast_convex_quad(host: &HostPolygon) -> Option<MicResult> {
                 let a1 = e1.a; let b1 = e1.b; let rhs1 = r_mid - e1.c;
                 let a2 = e2.a; let b2 = e2.b; let rhs2 = r_mid - e2.c;
                 let det = a1*b2 - a2*b1;
-                if det.abs() < 1e-12 { continue; }
+                if det.abs() < MIC_EPS { continue; }
                 let inv = 1.0 / det;
                 let x = (rhs1*b2 - rhs2*b1) * inv;
                 let y = (a1*rhs2 - a2*rhs1) * inv;
@@ -407,7 +409,7 @@ pub fn fast_convex_quad(host: &HostPolygon) -> Option<MicResult> {
             let a1 = e1.a; let b1 = e1.b; let rhs1 = r - e1.c;
             let a2 = e2.a; let b2 = e2.b; let rhs2 = r - e2.c;
             let det = a1*b2 - a2*b1;
-            if det.abs() < 1e-12 { continue; }
+            if det.abs() < MIC_EPS { continue; }
             let inv = 1.0 / det;
             let x = (rhs1*b2 - rhs2*b1) * inv;
             let y = (a1*rhs2 - a2*rhs1) * inv;
@@ -487,7 +489,7 @@ pub fn fast_convex_n(host: &HostPolygon) -> Option<MicResult> {
     let mut r_lo = 0.0;
 
     // Binary search: feasibility = intersection of all half-planes a*x+b*y+c >= r is non-empty
-    for _ in 0..50 {
+    for _ in 0..MIC_EXPANSION_ITERS {
         let r_mid = 0.5 * (r_lo + r_hi);
         if convex_feasible(&edges, r_mid) {
             r_lo = r_mid;
@@ -507,7 +509,7 @@ pub fn fast_convex_n(host: &HostPolygon) -> Option<MicResult> {
         let a1 = e1.0; let b1 = e1.1; let rhs1 = r - e1.2;
         let a2 = e2.0; let b2 = e2.1; let rhs2 = r - e2.2;
         let det = a1 * b2 - a2 * b1;
-        if det.abs() < 1e-12 { continue; }
+        if det.abs() < MIC_EPS { continue; }
         let inv = 1.0 / det;
         let x = (rhs1 * b2 - rhs2 * b1) * inv;
         let y = (a1 * rhs2 - a2 * rhs1) * inv;
@@ -542,7 +544,7 @@ fn convex_feasible(edges: &[(f64, f64, f64)], r: f64) -> bool {
         let a1 = e1.0; let b1 = e1.1; let rhs1 = r - e1.2;
         let a2 = e2.0; let b2 = e2.1; let rhs2 = r - e2.2;
         let det = a1 * b2 - a2 * b1;
-        if det.abs() < 1e-12 { continue; }
+        if det.abs() < MIC_EPS { continue; }
         let inv = 1.0 / det;
         let x = (rhs1 * b2 - rhs2 * b1) * inv;
         let y = (a1 * rhs2 - a2 * rhs1) * inv;

@@ -194,7 +194,7 @@ fn benchmark_polygon_sizes(c: &mut Criterion) {
 fn benchmark_axis_grid_backends(c: &mut Criterion) {
     let mut group = c.benchmark_group("axis_grid_backends");
     let poly = concave_l_shape();
-    let grid_steps = 80usize;
+    let grid_steps = ige_core::tuning::AA_GRID_COARSE_STEPS;
     let max_ratio = 0.0;
     let min_ratio = 0.0;
 

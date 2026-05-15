@@ -316,7 +316,7 @@ pub fn expand_rect_to_boundary(
         let hh = (y1 - y0) * 0.5;
         let mut lo = 0.0_f64;
         let mut hi = 1.0_f64;
-        for _ in 0..36 {
+        for _ in 0..crate::tuning::EXPAND_MAX_SCALE_ITERS {
             let mid = (lo + hi) * 0.5;
             if rect_covers(&idx, rot_poly, cx_c - hw * mid, cy_c - hh * mid, cx_c + hw * mid, cy_c + hh * mid) {
                 lo = mid;

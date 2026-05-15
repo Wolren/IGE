@@ -14,16 +14,15 @@ pub use super::AxisAlignedOptions;
 pub use super::containment::rect_fully_contained;
 use crate::shared::Rectangle;
 
-const EPS: f64 = 1e-12;
-const REFINE_ITERS: usize = 5;
-const BINARY_ITERS: usize = 40;
-const TOP_SEEDS: usize = 16;
-const MAX_GRID: usize = 120;
+use crate::tuning::{AA_EXACT_BINARY_ITERS, AA_EXACT_REFINE_ITERS, AA_EXACT_TOP_SEEDS, AA_EXACT_GRID_CAP, AA_EPS};
+
+const EPS: f64 = crate::tuning::AA_EPS;
 
 fn capped_coords(coords: &mut Vec<f64>) {
-    if coords.len() <= MAX_GRID { return; }
-    let step = coords.len() / MAX_GRID;
-    *coords = coords.iter().step_by(step.max(1)).take(MAX_GRID).copied().collect();
+    let max_grid = crate::tuning::AA_EXACT_GRID_CAP;
+    if coords.len() <= max_grid { return; }
+    let step = coords.len() / max_grid;
+    *coords = coords.iter().step_by(step.max(1)).take(max_grid).copied().collect();
 }
 
 fn collect_unique_coords(poly: &Polygon<f64>) -> (Vec<f64>, Vec<f64>) {
@@ -69,7 +68,7 @@ fn refine_side_min_x(
     x_min_bound: f64, max_ratio: f64,
 ) -> f64 {
     let mut lo = x_min_bound; let mut hi = x0;
-    for _ in 0..BINARY_ITERS {
+    for _ in 0..AA_EXACT_BINARY_ITERS {
         let mid = (lo + hi) * 0.5;
         if rect_fully_contained(poly, mid, y0, x1, y1) && aspect_ok(x1 - mid, y1 - y0, max_ratio) {
             hi = mid;
@@ -83,7 +82,7 @@ fn refine_side_max_x(
     x_max_bound: f64, max_ratio: f64,
 ) -> f64 {
     let mut lo = x1; let mut hi = x_max_bound;
-    for _ in 0..BINARY_ITERS {
+    for _ in 0..AA_EXACT_BINARY_ITERS {
         let mid = (lo + hi) * 0.5;
         if rect_fully_contained(poly, x0, y0, mid, y1) && aspect_ok(mid - x0, y1 - y0, max_ratio) {
             lo = mid;
@@ -97,7 +96,7 @@ fn refine_side_min_y(
     y_min_bound: f64, max_ratio: f64,
 ) -> f64 {
     let mut lo = y_min_bound; let mut hi = y0;
-    for _ in 0..BINARY_ITERS {
+    for _ in 0..AA_EXACT_BINARY_ITERS {
         let mid = (lo + hi) * 0.5;
         if rect_fully_contained(poly, x0, mid, x1, y1) && aspect_ok(x1 - x0, y1 - mid, max_ratio) {
             hi = mid;
@@ -111,7 +110,7 @@ fn refine_side_max_y(
     y_max_bound: f64, max_ratio: f64,
 ) -> f64 {
     let mut lo = y1; let mut hi = y_max_bound;
-    for _ in 0..BINARY_ITERS {
+    for _ in 0..AA_EXACT_BINARY_ITERS {
         let mid = (lo + hi) * 0.5;
         if rect_fully_contained(poly, x0, y0, x1, mid) && aspect_ok(x1 - x0, mid - y0, max_ratio) {
             lo = mid;
@@ -126,7 +125,7 @@ fn refine_continuous(poly: &Polygon<f64>, seed: Rectangle, options: &AxisAligned
     if !rect_fully_contained(poly, x0, y0, x1, y1) || !aspect_ok(x1 - x0, y1 - y0, options.max_ratio) {
         return None;
     }
-    for _ in 0..REFINE_ITERS {
+    for _ in 0..AA_EXACT_REFINE_ITERS {
         let p = (x0, y0, x1, y1);
         x0 = refine_side_min_x(poly, x0, y0, x1, y1, bb.min().x, options.max_ratio);
         x1 = refine_side_max_x(poly, x0, y0, x1, y1, bb.max().x, options.max_ratio);
@@ -143,7 +142,7 @@ fn refine_continuous(poly: &Polygon<f64>, seed: Rectangle, options: &AxisAligned
 fn push_top_seed(seeds: &mut Vec<Rectangle>, rect: &Rectangle) {
     let area = rect.area();
     if area <= EPS { return; }
-    if seeds.len() < TOP_SEEDS { seeds.push(rect.clone()); return; }
+    if seeds.len() < AA_EXACT_TOP_SEEDS { seeds.push(rect.clone()); return; }
     let mut min_idx = 0; let mut min_area = seeds[0].area();
     for (i, r) in seeds.iter().enumerate().skip(1) { let a = r.area(); if a < min_area { min_area = a; min_idx = i; } }
     if area > min_area { seeds[min_idx] = rect.clone(); }

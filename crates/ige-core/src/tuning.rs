@@ -39,8 +39,38 @@ pub const CONTAIN_BOUNDARY_EPS: f64 = 1e-9;
 pub const CONTRACT_BINARY_ITERS: usize = 32;
 
 // -- Axis-Aligned (lir_axis_aligned/*.rs) -------------------
-pub const AA_SUBDIV_LEVELS_HIGH: usize = 4;
-pub const AA_SUBDIV_LEVELS_MED: usize = 2;
-pub const AA_SUBDIV_LEVELS_LOW: usize = 1;
-pub const AA_SMALL_VERTEX_CUTOFF: usize = 16;
+pub const AA_SUBDIV_LEVELS_HIGH: usize = 12;
+pub const AA_SUBDIV_LEVELS_MED: usize = 8;
+pub const AA_SUBDIV_LEVELS_LOW: usize = 3;
+pub const AA_SMALL_VERTEX_CUTOFF: usize = 24;
 pub const AA_GRID_MAX_COORDS: usize = 51200;
+
+// -- Axis-Aligned GRID (lir_axis_aligned/*.rs) -------------------
+
+pub const AA_GRID_COARSE_STEPS: usize = 400;
+pub const AA_GRID_FINE_STEPS: usize = 400;
+pub const AA_BCRS_MAX_COORDS: usize = 4096;
+pub const AA_BCRS_GRID_CAP: usize = 120;
+pub const AA_EXACT_BINARY_ITERS: usize = 40;
+pub const AA_EXACT_REFINE_ITERS: usize = 5;
+pub const AA_EXACT_TOP_SEEDS: usize = 16;
+pub const AA_EXACT_GRID_CAP: usize = 120;
+pub const AA_EPS: f64 = 1e-12;
+
+// -- MIC (mic/solver/exact.rs) -------------------
+pub const MIC_BINARY_ITERS: usize = 40;
+pub const MIC_EXPANSION_ITERS: usize = 50;
+pub const MIC_MAX_SDF_SAMPLES: usize = 200;
+pub const MIC_EPS: f64 = 1e-12;
+pub const MIC_CANDIDATE_QUANTIZE: f64 = 1e9;
+pub const MIC_BASE_TRIPLE_CAP: usize = 64;
+pub const MIC_BASE_SS_SEG_CAP: usize = 32;
+pub const MIC_BASE_SS_VERT_CAP: usize = 12;
+pub const MIC_BASE_SEGS_PER_RING: usize = 3;
+pub const MIC_EXT_TRIPLE_CAP: usize = 96;
+pub const MIC_EXT_SS_SEG_CAP: usize = 64;
+pub const MIC_EXT_SS_VERT_CAP: usize = 32;
+pub const MIC_EXT_SEGS_PER_RING: usize = 5;
+
+// -- Oriented expand (expand.rs) -------------------
+pub const EXPAND_MAX_SCALE_ITERS: usize = 36;

@@ -61,6 +61,35 @@ pub fn mask_backend_name(_backend: MaskBackend) -> &'static str {
     "cpu"
 }
 
+/// Which point-sweep algorithm to use for points-only obstacle mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointCliSolver {
+    /// O(m² × k) sweep-line over x-candidates (default, works with mixed obstacles).
+    Sweep,
+    /// O(n log n) plane-sweep with BST (Chazelle, Drysdale & Lee). Points only.
+    Planar,
+    /// O(n log² n) divide-and-conquer (exact). Points only.
+    Dc,
+}
+
+/// Parse the `--point-solver` flag. Default is DC (exact divide-and-conquer).
+pub fn parse_point_solver(args: &[String]) -> PointCliSolver {
+    let value = args.iter()
+        .position(|a| a == "--point-solver")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+        .unwrap_or("dc");
+    match value {
+        "planar" | "plane" | "planesweep" => PointCliSolver::Planar,
+        "dc" | "divide" | "divideconquer" => PointCliSolver::Dc,
+        "sweep" => PointCliSolver::Sweep,
+        other => {
+            eprintln!("Unknown --point-solver '{other}', using dc");
+            PointCliSolver::Dc
+        }
+    }
+}
+
 /// Parse the `--axis-solver` flag.
 pub fn parse_axis_solver(args: &[String]) -> AxisCliSolver {
     // Backward compatibility: old flag implied grid baseline mode.
@@ -95,6 +124,20 @@ pub fn axis_solver_name(solver: AxisCliSolver) -> &'static str {
     }
 }
 
+/// Which obstacle types are active for LER.
+#[derive(Debug, Clone)]
+pub struct ObstacleFlags {
+    pub points: bool,
+    pub lines: bool,
+    pub polygons: bool,
+}
+
+impl ObstacleFlags {
+    pub fn any(&self) -> bool {
+        self.points || self.lines || self.polygons
+    }
+}
+
 /// Collect all CLI flags into a single configuration struct.
 #[derive(Debug, Clone)]
 pub struct CliConfig {
@@ -112,8 +155,13 @@ pub struct CliConfig {
     pub use_json: bool,
     pub limit: Option<usize>,
     pub file_path: Option<String>,
+    pub lines_file_path: Option<String>,
+    pub polygons_file_path: Option<String>,
+    pub line_thickness: f64,
     pub axis_solver: AxisCliSolver,
     pub mask_backend: MaskBackend,
+    pub obstacle_flags: ObstacleFlags,
+    pub point_solver: PointCliSolver,
 }
 
 impl CliConfig {
@@ -137,9 +185,26 @@ impl CliConfig {
         let file_path = args.iter()
             .position(|a| a == "--file")
             .and_then(|i| args.get(i + 1))
-            .map(|s| s.clone()); // Clone the String to own it
+            .map(|s| s.clone());
+        let lines_file_path = args.iter()
+            .position(|a| a == "--lines")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.clone());
+        let polygons_file_path = args.iter()
+            .position(|a| a == "--polygons")
+            .and_then(|i| args.get(i + 1))
+            .map(|s| s.clone());
+        let line_thickness = args.iter()
+            .position(|a| a == "--line-thickness")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(1.0);
         let axis_solver = parse_axis_solver(args);
         let mask_backend = parse_mask_backend(args);
+        let point_solver = parse_point_solver(args);
+
+        // Parse --obstacles flag
+        let obstacle_flags = parse_obstacles_flag(args, lines_file_path.is_some());
 
         Self {
             use_mic_compare,
@@ -156,8 +221,47 @@ impl CliConfig {
             use_json,
             limit,
             file_path,
+            lines_file_path,
+            polygons_file_path,
+            line_thickness,
             axis_solver,
             mask_backend,
+            obstacle_flags,
+            point_solver,
+        }
+    }
+}
+
+/// Parse `--obstacles <types>` where types is a comma-separated list.
+/// Default: `points` when no lines file; `lines` when a lines file is given.
+fn parse_obstacles_flag(args: &[String], has_lines_file: bool) -> ObstacleFlags {
+    if let Some(value) = args.iter()
+        .position(|a| a == "--obstacles")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.to_lowercase())
+    {
+        let mut flags = ObstacleFlags { points: false, lines: false, polygons: false };
+        for part in value.split(',') {
+            match part.trim() {
+                "points" | "point" => flags.points = true,
+                "lines" | "line" => flags.lines = true,
+                "polygons" | "polygon" => flags.polygons = true,
+                "all" => { flags.points = true; flags.lines = true; flags.polygons = true; }
+                "none" => {},
+                other => eprintln!("Unknown obstacle type '{other}', ignoring"),
+            }
+        }
+        if !flags.any() {
+            eprintln!("No obstacle types enabled via --obstacles (defaulting to 'points')");
+            flags.points = true;
+        }
+        flags
+    } else {
+        // Default: points if no lines file, lines if lines file provided
+        if has_lines_file {
+            ObstacleFlags { points: false, lines: true, polygons: false }
+        } else {
+            ObstacleFlags { points: true, lines: false, polygons: false }
         }
     }
 }
@@ -177,7 +281,19 @@ pub fn algo_name(config: &CliConfig) -> String {
     if config.use_mic_compare {
         format!("MIC exact vs GEOS{}", simd)
     } else if config.use_ler {
-        format!("LER Axis-Aligned{}", simd)
+        let mut parts = vec!["LER".to_string()];
+        let f = &config.obstacle_flags;
+        if f.points {
+            let mode = match config.point_solver {
+                PointCliSolver::Planar => "points(planar)",
+                PointCliSolver::Sweep => "points",
+                PointCliSolver::Dc => "points(dc)",
+            };
+            parts.push(mode.to_string());
+        }
+        if f.lines { parts.push("lines".to_string()); }
+        if f.polygons { parts.push("polygons".to_string()); }
+        format!("{}{}", parts.join("+"), simd)
     } else if config.use_sa && config.use_parallel {
         format!("LIR Approx Oriented + SA + local angle polish{}", simd)
     } else if config.use_sa {
